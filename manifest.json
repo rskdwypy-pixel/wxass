@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "微信公众号助手",
+  "version": "1.0.0",
+  "description": "微信公众号管理助手，快速搜索公众号和查看文章",
+  "permissions": [
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://mp.weixin.qq.com/*",
+    "http://mp.weixin.qq.com/*",
+    "https://www.zhihu.com/*",
+    "https://zhuanlan.zhihu.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mp.weixin.qq.com/*", "http://mp.weixin.qq.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": ["https://www.zhihu.com/*", "https://zhuanlan.zhihu.com/*"],
+      "js": ["content_zhihu.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {}
+}
