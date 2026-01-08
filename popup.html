@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <title>微信公众号助手</title>
   <style>
-    body { max-width: 1400px; margin: 0 auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { max-width: 1400px; margin: 0 auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100vh; box-sizing: border-box; }
     .top-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
     .tab-mini { padding: 6px 12px; background: #f0f0f0; color: #666; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
     .tab-mini.active { background: #07c160; color: white; }
@@ -23,13 +23,13 @@
     .icon-btn:hover { background: #e0e0e0; }
     .icon-group { display: flex; gap: 6px; }
     .search-box { display: flex; gap: 8px; margin-bottom: 15px; position: relative; }
-    input { flex: 1; padding: 8px 32px 8px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-    .clear-btn { position: absolute; right: 90px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; padding: 0; background: #ccc; color: white; border: none; border-radius: 50%; cursor: pointer; font-size: 12px; display: none; }
+    .search-box input { flex: 1; padding: 8px 32px 8px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+    .clear-btn { position: absolute; left: calc(100% - 170px - 32px); top: 50%; transform: translateY(-50%); width: 20px; height: 20px; padding: 0; background: #ccc; color: white; border: none; border-radius: 50%; cursor: pointer; font-size: 12px; display: none; }
     .clear-btn:hover { background: #999; }
     button { padding: 8px 16px; background: #07c160; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
     button:hover { background: #06ad56; }
     button:disabled { background: #ccc; cursor: not-allowed; pointer-events: none; }
-    .results { max-height: 500px; overflow-y: auto; }
+    .results { max-height: calc(100vh - 250px); overflow-y: auto; }
     .account-item { padding: 10px; border: 1px solid #eee; border-radius: 4px; margin-bottom: 8px; cursor: pointer; }
     .account-item:hover { background: #f5f5f5; }
     .account-header { display: flex; align-items: center; gap: 10px; }
@@ -54,6 +54,29 @@
     .tab-content.active { display: block; }
     .side-actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px; }
     .side-btn { width: 100%; padding: 10px; font-size: 13px; }
+    .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+    .modal-content { background: white; padding: 20px; border-radius: 8px; width: 400px; max-width: 90%; }
+    .modal-content h3 { margin: 0 0 10px 0; font-size: 16px; }
+    .modal-content input { width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+    .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px; }
+    .sort-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .sort-bar select { padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+    .article-stats { font-size: 12px; color: #999; margin-top: 4px; }
+    .article-stats span { margin-right: 12px; }
+    .stats-read { color: #ff9800; }
+    .stats-like { color: #e91e63; }
+    .stats-share { color: #2196f3; }
+    .stats-star { color: #9c27b0; }
+    .history-item:hover { background: #f5f5f5; }
+    .history-item:hover .delete-history { color: #f44336; }
+    @keyframes flash-border {
+      0%, 100% { border-color: #ffc107; box-shadow: 0 0 8px #ffc107; }
+      50% { border-color: #ff9800; box-shadow: 0 0 15px #ff9800; }
+    }
+    .flash-warning {
+      animation: flash-border 1s infinite;
+      border: 2px solid #ffc107 !important;
+    }
   </style>
 </head>
 <body>
@@ -67,39 +90,44 @@
       <div class="left-panel">
         <div class="header-bar">
           <div id="userDisplay" class="user-info"></div>
-          <div class="icon-group">
-            <button id="refreshBtn" class="icon-btn" title="刷新认证">🔄</button>
-            <button id="copyTokenBtn" class="icon-btn" title="复制Token">🔑</button>
-            <button id="copyCookieBtn" class="icon-btn" title="复制Cookie">🍪</button>
-          </div>
+          <button id="settingsBtn" class="icon-btn" title="抓包参数设置">&#9881;</button>
         </div>
 
         <div id="searchView">
-          <div class="search-box">
-            <input type="text" id="searchInput" placeholder="搜索公众号名称">
+          <div class="search-box" style="position: relative;">
+            <input type="text" id="searchInput" placeholder="搜索公众号名称或文章" autocomplete="off">
             <button id="clearBtn" class="clear-btn">×</button>
-            <button id="searchBtn">搜索</button>
+            <button id="searchBtn">搜账号</button>
+            <button id="searchArticleBtn" style="background: #ff9800;">搜文章</button>
+            <div id="searchHistory" style="position: absolute; top: 38px; left: 0; width: 200px; background: white; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow-y: auto; display: none; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.15);"></div>
           </div>
           <div id="results" class="results"></div>
-          <div id="pagination" style="display: none; margin-top: 10px; text-align: center;">
-            <button id="prevBtn" style="background: #666; margin-right: 8px;">上一页</button>
-            <span id="pageInfo" style="color: #666; font-size: 13px;"></span>
-            <button id="nextBtn" style="background: #666; margin-left: 8px;">下一页</button>
-          </div>
         </div>
 
         <div id="articleView" style="display: none;">
-          <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+          <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap;">
             <button id="backBtn" class="back-btn" style="flex: 0 0 auto; margin-bottom: 0;">返回搜索</button>
+            <button id="refreshArticlesBtn" style="background: #2196f3; flex: 0 0 auto;">刷新</button>
             <button id="exportCurrentBtn" style="background: #ff9800; flex: 0 0 auto;">导出当前</button>
             <button id="exportAllBtn" style="background: #f44336; flex: 0 0 auto;">导出所有</button>
+            <label id="cacheToggleLabel" style="display: none; align-items: center; gap: 4px; cursor: pointer; font-size: 12px; color: #666;">
+              <input type="checkbox" id="articleCacheToggle" style="width: auto; margin: 0;">
+              <span>缓存</span>
+            </label>
+            <span id="loadingProgress" style="font-size: 12px; color: #666; margin-left: 8px; display: none;"></span>
+            <div id="sortBar" class="sort-bar" style="display: none; margin-left: auto;">
+              <span style="font-size: 12px; color: #666;">排序:</span>
+              <select id="sortBy">
+                <option value="time">按时间</option>
+                <option value="read">按阅读量</option>
+                <option value="like">按点赞数</option>
+                <option value="share">按分享数</option>
+                <option value="star">按收藏数</option>
+                <option value="comment">按评论数</option>
+              </select>
+            </div>
           </div>
-          <div id="articles" class="results"></div>
-          <div id="articlePagination" style="display: none; margin-top: 10px; text-align: center;">
-            <button id="prevArticleBtn" style="background: #666; margin-right: 8px;">上一页</button>
-            <span id="articlePageInfo" style="color: #666; font-size: 13px;"></span>
-            <button id="nextArticleBtn" style="background: #666; margin-left: 8px;">下一页</button>
-          </div>
+          <div id="articles" class="results" style="max-height: calc(100vh - 180px);"></div>
         </div>
       </div>
 
@@ -111,6 +139,11 @@
         <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">已保存的文章</div>
         <div id="wxArticlesList" class="results"></div>
       </div>
+    </div>
+    <div id="pagination" style="display: none; padding: 15px 0; text-align: center; border-top: 1px solid #eee; background: white; margin-top: 10px;">
+      <button id="prevBtn" style="background: #666; margin-right: 8px;">上一页</button>
+      <span id="pageInfo" style="color: #666; font-size: 13px;"></span>
+      <button id="nextBtn" style="background: #666; margin-left: 8px;">下一页</button>
     </div>
   </div>
 
@@ -133,6 +166,64 @@
       </div>
     </div>
   </div>
+
+  <div id="articlePagination" style="display: none; padding: 15px 0; text-align: center; border-top: 1px solid #eee; background: white; margin-top: 10px;">
+    <button id="prevArticleBtn" style="background: #666; margin-right: 8px;">上一页</button>
+    <span id="articlePageInfo" style="color: #666; font-size: 13px;"></span>
+    <button id="nextArticleBtn" style="background: #666; margin-left: 8px;">下一页</button>
+  </div>
+
+  <div id="settingsModal" class="modal" style="display: none;">
+    <div class="modal-content" style="width: 500px; max-height: 80vh; overflow-y: auto;">
+      <h3>抓包参数配置</h3>
+      <p style="font-size: 12px; color: #666; margin-bottom: 15px;">从微信客户端抓包获取参数，用于获取文章阅读量。每个公众号需要单独配置。</p>
+
+      <div id="addAccountSection" style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 4px;">
+        <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">添加公众号配置</div>
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+          <div style="flex: 1; position: relative;">
+            <input type="text" id="searchAccountInput" placeholder="搜索公众号名称" style="width: 100%; padding-right: 24px;">
+            <span class="input-clear" data-target="searchAccountInput" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #999; display: none;">×</span>
+          </div>
+          <button id="searchAccountBtn" style="padding: 8px 12px;">搜索</button>
+        </div>
+        <div id="accountSearchResults" style="max-height: 150px; overflow-y: auto; display: none;"></div>
+        <div id="cachedAccountsList" style="margin-top: 10px;"></div>
+      </div>
+
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; cursor: pointer;">
+        <input type="checkbox" id="enableEnhanced" style="width: auto; margin: 0;">
+        <span style="font-size: 13px;">启用增强模式（获取阅读量）</span>
+      </label>
+
+      <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee;">
+        <span style="font-size: 12px; color: #666; width: 40px;">uin:</span>
+        <div style="flex: 1; position: relative;">
+          <input type="text" id="globalUin" placeholder="通用uin参数" style="width: 100%; padding-right: 24px;">
+          <span class="input-clear" data-target="globalUin" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #999; display: none;">×</span>
+        </div>
+      </div>
+
+      <div id="accountsList" style="margin-bottom: 15px;"></div>
+
+      <div class="modal-buttons">
+        <button id="cancelSettingsBtn" style="background: #666;">取消</button>
+        <button id="saveSettingsBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="commentsModal" class="modal" style="display: none;">
+    <div class="modal-content" style="width: 550px; max-height: 80vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h3 style="margin: 0;">文章评论</h3>
+        <span id="closeCommentsBtn" style="cursor: pointer; font-size: 20px; color: #999;">&times;</span>
+      </div>
+      <div id="commentsContent" style="max-height: 60vh; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+  <div id="toast" style="position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 10px 20px; border-radius: 4px; font-size: 13px; display: none; z-index: 2000;"></div>
 
   <script src="popup.js"></script>
 </body>
