@@ -12,6 +12,45 @@ function extractAuth() {
   }
 }
 
+// 提取 fakeid (从 URL 中获取 __biz 参数)
+function extractFakeid() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const biz = urlParams.get('__biz');
+  return biz || '';
+}
+
+// 提取发布时间
+function extractPublishTime() {
+  const publishTimeEl = document.querySelector('#publish_time');
+  if (publishTimeEl) {
+    return publishTimeEl.innerText.trim();
+  }
+  // 尝试从其他可能的位置获取
+  const dateEl = document.querySelector('.rich_media_meta.rich_media_meta_text');
+  if (dateEl) {
+    return dateEl.innerText.trim();
+  }
+  return '';
+}
+
+// 提取账号名称
+function extractAccountName() {
+  const accountNameEl = document.querySelector('#js_name');
+  if (accountNameEl) {
+    return accountNameEl.innerText.trim();
+  }
+  return '';
+}
+
+// 提取地区
+function extractRegion() {
+  const regionEl = document.querySelector('#js_ip_wording');
+  if (regionEl) {
+    return regionEl.innerText.trim();
+  }
+  return '';
+}
+
 // 提取文章内容
 function extractArticle() {
   const title = document.querySelector('#activity-name')?.innerText ||
@@ -21,7 +60,12 @@ function extractArticle() {
   return {
     title: title.trim(),
     content: content.trim(),
-    url: window.location.href
+    url: window.location.href,
+    fakeid: extractFakeid(),
+    accountName: extractAccountName(),
+    publishTime: extractPublishTime(),
+    region: extractRegion(),
+    saveTime: Date.now()
   };
 }
 

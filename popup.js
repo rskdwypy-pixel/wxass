@@ -107,6 +107,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('cancelSettingsBtn').addEventListener('click', closeSettingsModal);
   document.getElementById('sortBy').addEventListener('change', sortArticles);
 
+  // 模态框点击外部关闭
+  const settingsModal = document.getElementById('settingsModal');
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) {
+      closeSettingsModal();
+    }
+  });
+  settingsModal.addEventListener('dblclick', (e) => {
+    if (e.target === settingsModal) {
+      closeSettingsModal();
+    }
+  });
+
+  // 导出路径设置事件
+  document.getElementById('selectExportPathBtn').addEventListener('click', selectExportPath);
+  document.getElementById('clearExportPathBtn').addEventListener('click', clearExportPath);
+  document.getElementById('exportPathDisplay').addEventListener('click', selectExportPath);
+
+  // 初始化导出路径显示
+  loadExportPathDisplay();
+
   // 加载抓包参数
   loadWxClientSettings();
 
@@ -153,7 +174,7 @@ async function checkAuthStatus() {
   currentAuth = data;
 
   const userDisplay = document.getElementById('userDisplay');
-  const iconGroup = `<div class="icon-group" style="margin-left: 8px;"><button id="refreshBtn" class="icon-btn" title="刷新认证">🔄</button><button id="copyTokenBtn" class="icon-btn" title="复制Token">🔑</button><button id="copyCookieBtn" class="icon-btn" title="复制Cookie">🍪</button><button id="logoutBtn" class="icon-btn" title="退出登录" style="color: #f44336;">🚪</button></div>`;
+  const iconGroup = `<div class="icon-group" style="margin-left: 8px;"><button id="refreshBtn" class="icon-btn" title="刷新认证">🔄</button><button id="copyTokenBtn" class="icon-btn" title="复制Token">🔑</button><button id="copyCookieBtn" class="icon-btn" title="复制Cookie">🍪</button><button id="logoutBtn" class="icon-btn" title="退出登录" style="color: #f44336;">⛔</button></div>`;
   if (data.token && data.cookie) {
     if (data.userInfo) {
       userDisplay.innerHTML = `<img src="${data.userInfo.avatar}" class="user-avatar" alt=""><span style="font-size: 13px;">${data.userInfo.nickname}</span>${iconGroup}`;
@@ -749,13 +770,17 @@ async function loadEnhancedArticles(fakeid, page = 0) {
   const articlesEl = document.getElementById('articles');
   articlesEl.innerHTML = '<div class="empty">加载中（增强模式）...</div>';
 
+  // 获取当前账号配置
+  const accountConfig = accountConfigs[fakeid] || {};
+  const uin = globalUin || '';
+
   const offset = page * 10;
   const response = await chrome.runtime.sendMessage({
     type: 'fetchProfileArticles',
     biz: fakeid,
-    uin: wxClientParams.uin,
-    key: wxClientParams.key,
-    pass_ticket: wxClientParams.pass_ticket,
+    uin: uin,
+    key: accountConfig.key || '',
+    pass_ticket: accountConfig.pass_ticket || '',
     offset
   });
 
@@ -975,8 +1000,9 @@ async function loadArticleStatsAsync(fakeid, allArticles, articlesToFetch, loadi
   isLoadingStats = false;
   enhancedArticlesList = allArticles;
 
-  // 如果启用缓存，保存数据
-  if (accountConfig && accountConfig.enableCache !== false) {
+  // 如果启用缓存，保存数据（包含统计数据）
+  const config = accountConfigs[fakeid];
+  if (config && config.enableCache !== false) {
     await saveArticleCache(fakeid, allArticles);
   }
 }
@@ -1282,28 +1308,70 @@ async function loadWxArticles() {
   rightPanel.classList.remove('hidden');
   mainContainer.classList.remove('full-width');
 
-  listEl.innerHTML = articles.map((art, idx) => `
-    <div class="wx-article-item">
-      <div class="wx-article-title">${art.title}</div>
-      <div class="wx-article-url">${art.url}</div>
-      <button class="copy-btn" data-idx="${idx}">复制</button>
-      <button class="copy-btn" data-idx="${idx}" style="background: #f44336; margin-left: 4px;">删除</button>
-    </div>
-  `).join('');
+  listEl.innerHTML = articles.map((art, idx) => {
+    // 从文章中提取的账号名称
+    const accountName = art.accountName || '未知账号';
+    // 发布时间
+    const publishTime = art.publishTime || '';
+    // 地区
+    const region = art.region || '';
 
-  listEl.querySelectorAll('.copy-btn').forEach(btn => {
+    return `
+      <div class="wx-article-item">
+        <div class="wx-article-header">
+          <a class="wx-article-title-link" href="${art.url}" target="_blank" title="${art.title}">${art.title}</a>
+        </div>
+        <div class="wx-article-meta">
+          <span class="meta-account" title="账号">${accountName}</span>
+          ${publishTime ? `<span class="meta-time" title="发布时间">${publishTime}</span>` : ''}
+          ${region ? `<span class="meta-region" title="地区">${region}</span>` : ''}
+        </div>
+        <div class="wx-article-actions">
+          <button class="action-btn copy-content-btn" data-idx="${idx}" title="复制文案">复制文案</button>
+          <button class="action-btn export-btn" data-idx="${idx}" title="导出文案">导出文案</button>
+          <button class="action-btn delete-btn" data-idx="${idx}" title="删除">删除</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // 绑定按钮事件
+  listEl.querySelectorAll('.copy-content-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const idx = parseInt(btn.dataset.idx);
-      if (btn.textContent === '删除') {
+      const art = articles[idx];
+      const text = `标题: ${art.title}\n\n${art.content}`;
+      await navigator.clipboard.writeText(text);
+      btn.textContent = '已复制';
+      setTimeout(() => btn.textContent = '复制文案', 1500);
+    });
+  });
+
+  listEl.querySelectorAll('.export-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = parseInt(btn.dataset.idx);
+      const art = articles[idx];
+      // 导出为文本文件
+      const text = `标题: ${art.title}\n\n${art.content}`;
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${art.title.slice(0, 30)}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  });
+
+  listEl.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = parseInt(btn.dataset.idx);
+      if (confirm('确定要删除这篇文章吗？')) {
         articles.splice(idx, 1);
         await chrome.storage.local.set({ articles });
         loadWxArticles();
-      } else {
-        const art = articles[idx];
-        const text = `标题: ${art.title}\n\n${art.content}`;
-        navigator.clipboard.writeText(text);
-        btn.textContent = '已复制';
-        setTimeout(() => btn.textContent = '复制', 1000);
       }
     });
   });
@@ -1496,17 +1564,13 @@ function generateFullExportContent(article, content) {
     text += `发布时间：${new Date(article.create_time * 1000).toLocaleString()}\n`;
   }
 
-  // 添加统计数据
-  if (article.read_num !== undefined || article.like_num !== undefined ||
-      article.share_num !== undefined || article.star_num !== undefined ||
-      article.comment_count !== undefined) {
-    text += `\n======== 数据统计 ========\n`;
-    if (article.read_num !== undefined) text += `阅读量：${article.read_num.toLocaleString()}\n`;
-    if (article.like_num !== undefined) text += `点赞数：${article.like_num.toLocaleString()}\n`;
-    if (article.share_num !== undefined) text += `分享数：${article.share_num.toLocaleString()}\n`;
-    if (article.star_num !== undefined) text += `收藏数：${article.star_num.toLocaleString()}\n`;
-    if (article.comment_count !== undefined) text += `评论数：${article.comment_count.toLocaleString()}\n`;
-  }
+  // 添加统计数据（始终显示统计部分，有数据显示数据，无数据显示"未获取"）
+  text += `\n======== 数据统计 ========\n`;
+  text += `阅读量：${article.read_num !== undefined ? article.read_num.toLocaleString() : '未获取'}\n`;
+  text += `点赞数：${article.like_num !== undefined ? article.like_num.toLocaleString() : '未获取'}\n`;
+  text += `分享数：${article.share_num !== undefined ? article.share_num.toLocaleString() : '未获取'}\n`;
+  text += `收藏数：${article.star_num !== undefined ? article.star_num.toLocaleString() : '未获取'}\n`;
+  text += `评论数：${article.comment_count !== undefined ? article.comment_count.toLocaleString() : '未获取'}\n`;
 
   // 添加评论内容
   if (article.comments && article.comments.length > 0) {
@@ -1716,6 +1780,480 @@ async function exportAllArticles() {
   setTimeout(() => btn.textContent = originalText, 2000);
 }
 
+// ============= 数据导入导出功能 =============
+
+// 导出单个账号的所有缓存数据（使用文件夹结构）
+async function exportSingleAccountData(fakeid) {
+  const config = accountConfigs[fakeid];
+  const articles = await loadArticleCache(fakeid);
+
+  if (!articles || articles.length === 0) {
+    showToast('该账号暂无缓存数据');
+    return;
+  }
+
+  const accountName = config?.name || fakeid;
+
+  // 确认导出
+  if (!confirm(`即将导出「${accountName}」的 ${articles.length} 篇文章，是否继续？`)) {
+    return;
+  }
+
+  try {
+    // 使用保存的目录或提示用户选择
+    const dirHandle = await getOrCreateExportDir();
+
+    // 创建账号文件夹
+    const safeAccountName = accountName.replace(/[<>:"/\\|?*]/g, '_');
+    const accountDirHandle = await dirHandle.getDirectoryHandle(safeAccountName, { create: true });
+
+    let exportedCount = 0;
+    showToast(`开始导出 ${articles.length} 篇文章...`);
+
+    for (const art of articles) {
+      try {
+        const result = await fetchArticleContent(art.link);
+        let finalTitle = result.title || art.title;
+        if (finalTitle.startsWith('无标题')) {
+          finalTitle = extractTimeFromContent(result.content) || finalTitle;
+        }
+
+        // 默认导出全量数据（包含统计信息、评论等）
+        const text = generateFullExportContent(art, result.content);
+
+        // 清理文件名并写入文件
+        const safeFileName = finalTitle.replace(/[<>:"/\\|?*]/g, '_');
+        const fileHandle = await accountDirHandle.getFileHandle(`${safeFileName}.txt`, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(text);
+        await writable.close();
+
+        exportedCount++;
+
+        // 更新进度
+        if (exportedCount % 10 === 0) {
+          showToast(`导出进度：${exportedCount}/${articles.length}`);
+        }
+      } catch (e) {
+        console.error(`导出文章失败: ${art.title}`, e);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    showToast(`已完成导出 ${exportedCount} 篇文章`);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      showToast('已取消导出');
+    } else {
+      console.error('导出失败:', err);
+      // 降级方案
+      fallbackExportSingle(accountName, articles);
+    }
+  }
+}
+
+// 单账号降级导出方案
+async function fallbackExportSingle(accountName, articles) {
+  showToast('使用传统下载方式...');
+
+  let exportedCount = 0;
+  const safeAccountName = accountName.replace(/[<>:"/\\|?*]/g, '_');
+
+  for (const art of articles) {
+    try {
+      const result = await fetchArticleContent(art.link);
+      let finalTitle = result.title || art.title;
+      if (finalTitle.startsWith('无标题')) {
+        finalTitle = extractTimeFromContent(result.content) || finalTitle;
+      }
+
+      // 默认导出全量数据（包含统计信息、评论等）
+      const text = generateFullExportContent(art, result.content);
+
+      // 文件名格式：账号名_文章标题
+      const filename = `${safeAccountName}_${finalTitle}`;
+      downloadTextFile(filename, text);
+      exportedCount++;
+
+      if (exportedCount % 10 === 0) {
+        showToast(`导出进度：${exportedCount}/${articles.length}`);
+      }
+    } catch (e) {
+      console.error(`导出文章失败: ${art.title}`, e);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+
+  showToast(`已完成导出 ${exportedCount} 篇文章`);
+}
+
+// 导出所有公众号缓存数据（使用文件夹结构）
+async function exportAllCacheData() {
+  const data = await chrome.storage.local.get(['articleCache']);
+  const allCache = data.articleCache || {};
+  const configs = accountConfigs || {};
+
+  if (Object.keys(allCache).length === 0) {
+    showToast('暂无缓存数据');
+    return;
+  }
+
+  // 计算总文章数
+  let totalArticles = 0;
+  for (const fakeid of Object.keys(allCache)) {
+    const articles = await loadArticleCache(fakeid);
+    if (articles) totalArticles += articles.length;
+  }
+
+  if (totalArticles === 0) {
+    showToast('暂无有效缓存数据');
+    return;
+  }
+
+  // 确认导出
+  if (!confirm(`即将导出 ${Object.keys(allCache).length} 个账号共 ${totalArticles} 篇文章，是否继续？`)) {
+    return;
+  }
+
+  try {
+    // 使用保存的目录或提示用户选择
+    const dirHandle = await getOrCreateExportDir();
+
+    let totalExported = 0;
+
+    // 遍历每个账号
+    for (const fakeid of Object.keys(allCache)) {
+      const accountName = configs[fakeid]?.name || fakeid;
+      const articles = await loadArticleCache(fakeid);
+
+      if (!articles || articles.length === 0) continue;
+
+      // 创建账号文件夹（清理非法文件名字符）
+      const safeAccountName = accountName.replace(/[<>:"/\\|?*]/g, '_');
+      const accountDirHandle = await dirHandle.getDirectoryHandle(safeAccountName, { create: true });
+
+      showToast(`正在导出「${accountName}」...`);
+
+      // 导出该账号的所有文章
+      for (const art of articles) {
+        try {
+          const result = await fetchArticleContent(art.link);
+          let finalTitle = result.title || art.title;
+          if (finalTitle.startsWith('无标题')) {
+            finalTitle = extractTimeFromContent(result.content) || finalTitle;
+          }
+
+          // 默认导出全量数据（包含统计信息、评论等）
+          const text = generateFullExportContent(art, result.content);
+
+          // 清理文件名
+          const safeFileName = finalTitle.replace(/[<>:"/\\|?*]/g, '_');
+          const fileHandle = await accountDirHandle.getFileHandle(`${safeFileName}.txt`, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(text);
+          await writable.close();
+
+          totalExported++;
+        } catch (e) {
+          console.error(`导出文章失败: ${art.title}`, e);
+        }
+
+        // 避免请求过快
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+
+    showToast(`已完成导出 ${totalExported} 篇文章`);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      showToast('已取消导出');
+    } else {
+      console.error('导出失败:', err);
+      // 降级方案：使用传统下载方式
+      fallbackExport();
+    }
+  }
+}
+
+// 降级导出方案（当 File System Access API 不可用时）
+async function fallbackExport() {
+  showToast('使用传统下载方式...');
+
+  const data = await chrome.storage.local.get(['articleCache']);
+  const allCache = data.articleCache || {};
+  const configs = accountConfigs || {};
+
+  let totalExported = 0;
+
+  for (const fakeid of Object.keys(allCache)) {
+    const accountName = configs[fakeid]?.name || fakeid;
+    const articles = await loadArticleCache(fakeid);
+
+    if (!articles || articles.length === 0) continue;
+
+    showToast(`正在导出「${accountName}」...`);
+
+    for (const art of articles) {
+      try {
+        const result = await fetchArticleContent(art.link);
+        let finalTitle = result.title || art.title;
+        if (finalTitle.startsWith('无标题')) {
+          finalTitle = extractTimeFromContent(result.content) || finalTitle;
+        }
+
+        // 默认导出全量数据（包含统计信息、评论等）
+        const text = generateFullExportContent(art, result.content);
+
+        // 文件名格式：账号名_文章标题
+        const safeAccountName = accountName.replace(/[<>:"/\\|?*]/g, '_');
+        const filename = `${safeAccountName}_${finalTitle}`;
+        downloadTextFile(filename, text);
+
+        totalExported++;
+      } catch (e) {
+        console.error(`导出文章失败: ${art.title}`, e);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+
+  showToast(`已完成导出 ${totalExported} 篇文章`);
+}
+
+// 导出设置数据（JSON格式，用于跨设备导入）
+async function exportSettingsData() {
+  const exportStatsEl = document.getElementById('importStats');
+  exportStatsEl.style.display = 'block';
+  exportStatsEl.textContent = '正在准备导出...';
+
+  try {
+    // 获取所有需要导出的数据
+    const data = await chrome.storage.local.get(['articleCache', 'dailyUpdateRecord', 'accountConfigs']);
+
+    // 统计信息
+    const cacheCount = Object.keys(data.articleCache || {}).length;
+    const recordCount = Object.keys(data.dailyUpdateRecord || {}).length;
+    const configCount = Object.keys(data.accountConfigs || {}).length;
+
+    // 计算总文章数
+    let totalArticles = 0;
+    for (const cache of Object.values(data.articleCache || {})) {
+      totalArticles += cache.data?.length || 0;
+    }
+
+    if (cacheCount === 0) {
+      exportStatsEl.innerHTML = '<span style="color: #f44336;">暂无数据可导出</span>';
+      return;
+    }
+
+    // 提取账号名称（不包含敏感配置如 key、pass_ticket）
+    const accountNames = {};
+    for (const [fakeid, config] of Object.entries(data.accountConfigs || {})) {
+      accountNames[fakeid] = config.name || '';
+    }
+
+    // 构建导出数据
+    const exportData = {
+      version: '1.0.0',
+      exportTime: new Date().toISOString(),
+      articleCache: data.articleCache || {},
+      dailyUpdateRecord: data.dailyUpdateRecord || {},
+      accountNames: accountNames
+    };
+
+    // 生成文件名（包含日期时间）
+    const date = new Date();
+    const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+    const timeStr = `${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
+    const filename = `wxass_backup_${dateStr}_${timeStr}.json`;
+
+    // 下载文件
+    downloadJsonFile(filename, exportData);
+
+    exportStatsEl.innerHTML = `
+      <span style="color: #52c41a;">导出成功！</span><br>
+      账号数: ${cacheCount} 个，文章数: ${totalArticles} 篇
+    `;
+
+  } catch (e) {
+    console.error('导出失败:', e);
+    exportStatsEl.innerHTML = `<span style="color: #f44336;">导出失败: ${e.message}</span>`;
+  }
+}
+
+// 导入缓存数据（增量合并、去重、新数据覆盖旧数据）
+async function importCacheData(file) {
+  const importStatsEl = document.getElementById('importStats');
+  importStatsEl.style.display = 'block';
+  importStatsEl.textContent = '正在读取文件...';
+
+  try {
+    const text = await file.text();
+    const importData = JSON.parse(text);
+
+    // 验证数据格式
+    if (!importData.version || !importData.articleCache) {
+      importStatsEl.innerHTML = '<span style="color: #f44336;">数据格式错误，请确保导出的是本工具生成的数据文件</span>';
+      return;
+    }
+
+    importStatsEl.textContent = '正在导入数据...';
+
+    // 获取当前存储的数据
+    const currentData = await chrome.storage.local.get(['articleCache', 'dailyUpdateRecord', 'accountConfigs']);
+    const currentCache = currentData.articleCache || {};
+    const currentUpdateRecords = currentData.dailyUpdateRecord || {};
+    const currentConfigs = currentData.accountConfigs || {};
+
+    // 统计变量
+    let newAccounts = 0;
+    let updatedAccounts = 0;
+    let newArticles = 0;
+    let updatedArticles = 0;
+
+    // 合并 articleCache（增量合并、去重、新数据覆盖旧数据）
+    for (const [fakeid, importedCache] of Object.entries(importData.articleCache)) {
+      if (!currentCache[fakeid]) {
+        // 新账号，直接添加
+        currentCache[fakeid] = importedCache;
+        newAccounts++;
+        newArticles += importedCache.data?.length || 0;
+      } else {
+        // 已有账号，合并文章数据
+        updatedAccounts++;
+        const existingArticles = currentCache[fakeid].data || [];
+        const importedArticles = importedCache.data || [];
+
+        // 创建文章链接到文章的映射，用于快速查找
+        const articleMap = new Map();
+        existingArticles.forEach(art => {
+          if (art.link) {
+            articleMap.set(art.link, art);
+          }
+        });
+
+        // 遍历导入的文章
+        importedArticles.forEach(importedArt => {
+          if (!importedArt.link) return;
+
+          const existingArt = articleMap.get(importedArt.link);
+          if (existingArt) {
+            // 文章已存在，用新数据覆盖旧数据
+            // 合并统计数据和评论
+            const merged = {
+              ...existingArt,
+              // 新数据覆盖旧数据
+              title: importedArt.title || existingArt.title,
+              cover: importedArt.cover || existingArt.cover,
+              create_time: importedArt.create_time || existingArt.create_time,
+              // 统计数据优先使用新数据
+              read_num: importedArt.read_num !== undefined ? importedArt.read_num : existingArt.read_num,
+              like_num: importedArt.like_num !== undefined ? importedArt.like_num : existingArt.like_num,
+              share_num: importedArt.share_num !== undefined ? importedArt.share_num : existingArt.share_num,
+              star_num: importedArt.star_num !== undefined ? importedArt.star_num : existingArt.star_num,
+              comment_count: importedArt.comment_count !== undefined ? importedArt.comment_count : existingArt.comment_count,
+              // 评论数据：合并或使用新数据
+              comments: importedArt.comments && importedArt.comments.length > 0 ? importedArt.comments : existingArt.comments,
+              comment_id: importedArt.comment_id || existingArt.comment_id
+            };
+            articleMap.set(importedArt.link, merged);
+            updatedArticles++;
+          } else {
+            // 新文章，添加到映射
+            articleMap.set(importedArt.link, importedArt);
+            newArticles++;
+          }
+        });
+
+        // 更新缓存数据
+        currentCache[fakeid].data = Array.from(articleMap.values());
+        // 更新时间戳
+        if (importedCache.timestamp > currentCache[fakeid].timestamp) {
+          currentCache[fakeid].timestamp = importedCache.timestamp;
+        }
+      }
+    }
+
+    // 合并 dailyUpdateRecord
+    if (importData.dailyUpdateRecord) {
+      for (const [fakeid, record] of Object.entries(importData.dailyUpdateRecord)) {
+        if (!currentUpdateRecords[fakeid]) {
+          currentUpdateRecords[fakeid] = record;
+        } else {
+          // 如果导入的记录更新，则更新
+          if (record.lastUpdateTime && (!currentUpdateRecords[fakeid].lastUpdateTime || record.lastUpdateTime > currentUpdateRecords[fakeid].lastUpdateTime)) {
+            currentUpdateRecords[fakeid] = record;
+          }
+        }
+      }
+    }
+
+    // 合并账号名称（仅名称，不包含敏感配置）
+    if (importData.accountNames) {
+      for (const [fakeid, name] of Object.entries(importData.accountNames)) {
+        if (!currentConfigs[fakeid]) {
+          currentConfigs[fakeid] = { name, key: '', pass_ticket: '', enableCache: true };
+        } else if (!currentConfigs[fakeid].name) {
+          currentConfigs[fakeid].name = name;
+        }
+      }
+    }
+
+    // 保存到存储
+    await chrome.storage.local.set({
+      articleCache: currentCache,
+      dailyUpdateRecord: currentUpdateRecords,
+      accountConfigs: currentConfigs
+    });
+
+    // 刷新显示
+    await renderHomeCachedAccountsList();
+
+    // 显示导入结果
+    importStatsEl.innerHTML = `
+      <span style="color: #52c41a;">导入成功！</span><br>
+      新增账号: ${newAccounts} 个，更新账号: ${updatedAccounts} 个<br>
+      新增文章: ${newArticles} 篇，更新文章: ${updatedArticles} 篇
+    `;
+
+  } catch (e) {
+    console.error('导入失败:', e);
+    importStatsEl.innerHTML = `<span style="color: #f44336;">导入失败: ${e.message}</span>`;
+  }
+}
+
+// 下载JSON文件
+function downloadJsonFile(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 打开分析页面
+async function openAnalysisPage(fakeid) {
+  const data = await chrome.storage.local.get(['articleCache', 'accountConfigs']);
+  const cache = data.articleCache?.[fakeid];
+  const config = data.accountConfigs?.[fakeid];
+
+  if (!cache || !cache.data || cache.data.length === 0) {
+    showToast('该账号暂无缓存数据');
+    return;
+  }
+
+  // 打开新标签页
+  const analysisUrl = chrome.runtime.getURL('analysis.html') + '?fakeid=' + fakeid;
+  chrome.tabs.create({ url: analysisUrl });
+}
+
 // 搜狗微信搜索文章
 async function searchSogouArticle(page = 0) {
   const query = document.getElementById('searchInput').value.trim();
@@ -1917,6 +2455,19 @@ async function openSettingsModal() {
 
   // 绑定输入框清空按钮
   bindInputClearButtons();
+
+  // 绑定导入导出按钮事件
+  document.getElementById('exportAllDataBtn').onclick = exportSettingsData;
+  document.getElementById('importDataBtn').onclick = () => {
+    document.getElementById('importFileInput').click();
+  };
+  document.getElementById('importFileInput').onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      importCacheData(file);
+      e.target.value = ''; // 清空文件选择，允许重复导入同一文件
+    }
+  };
 }
 
 // 绑定输入框清空按钮
@@ -2117,6 +2668,8 @@ async function renderHomeCachedAccountsList() {
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <span style="font-weight: 600; font-size: 13px; color: #333;">${name}</span>
                   ${updatedToday ? '<span style="background: #52c41a; color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px;">今日已更新</span>' : ''}
+                  <span class="export-account-btn" data-fakeid="${fakeid}" title="导出该账号所有数据">📤</span>
+                  <span class="analyze-account-btn" data-fakeid="${fakeid}" title="分析该账号数据">📊</span>
                 </div>
                 <span class="expand-btn" style="color: #1890ff; font-size: 10px;">${isExpanded ? '▲ 收起' : '▼ 展开文章'}</span>
               </div>
@@ -2205,6 +2758,24 @@ async function renderHomeCachedAccountsList() {
     item.addEventListener('dblclick', () => {
       const fakeid = item.dataset.fakeid;
       loadArticles(fakeid, 0, false);
+    });
+  });
+
+  // 绑定导出按钮事件
+  container.querySelectorAll('.export-account-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const fakeid = btn.dataset.fakeid;
+      exportSingleAccountData(fakeid);
+    });
+  });
+
+  // 绑定分析按钮事件
+  container.querySelectorAll('.analyze-account-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const fakeid = btn.dataset.fakeid;
+      openAnalysisPage(fakeid);
     });
   });
 
@@ -2490,6 +3061,11 @@ document.getElementById('commentsModal')?.addEventListener('click', (e) => {
     document.getElementById('commentsModal').style.display = 'none';
   }
 });
+document.getElementById('commentsModal')?.addEventListener('dblclick', (e) => {
+  if (e.target.id === 'commentsModal') {
+    document.getElementById('commentsModal').style.display = 'none';
+  }
+});
 
 // 刷新文章列表
 async function refreshArticles() {
@@ -2619,4 +3195,196 @@ async function sortArticles() {
   }
 
   displayEnhancedArticles(sorted);
+}
+
+// ============= 导出路径管理（使用 IndexedDB 存储文件夹句柄）============
+
+// 打开 IndexedDB 数据库
+function openExportPathDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('ExportPathDB', 1);
+
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains('paths')) {
+        db.createObjectStore('paths');
+      }
+    };
+  });
+}
+
+// 保存导出路径句柄到 IndexedDB
+async function saveExportPathHandle(handle) {
+  const db = await openExportPathDB();
+  const tx = db.transaction('paths', 'readwrite');
+  const store = tx.objectStore('paths');
+  store.put(handle, 'default');
+
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+// 从 IndexedDB 获取导出路径句柄
+async function getExportPathHandle() {
+  const db = await openExportPathDB();
+  const tx = db.transaction('paths', 'readonly');
+  const store = tx.objectStore('paths');
+  const request = store.get('default');
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      db.close();
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
+  });
+}
+
+// 删除导出路径句柄
+async function deleteExportPathHandle() {
+  const db = await openExportPathDB();
+  const tx = db.transaction('paths', 'readwrite');
+  const store = tx.objectStore('paths');
+  store.delete('default');
+
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+// 获取或创建导出目录
+async function getOrCreateExportDir() {
+  // 尝试从 IndexedDB 获取已保存的句柄
+  let dirHandle = await getExportPathHandle().catch(() => null);
+
+  if (dirHandle) {
+    // 验证句柄是否仍然有效
+    try {
+      // 尝试访问目录以验证权限
+      const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
+      if (permission === 'granted') {
+        return dirHandle;
+      }
+      // 请求权限
+      const newPermission = await dirHandle.requestPermission({ mode: 'readwrite' });
+      if (newPermission === 'granted') {
+        return dirHandle;
+      }
+    } catch (e) {
+      // 句柄无效，清除并重新选择
+      await deleteExportPathHandle();
+    }
+  }
+
+  // 没有保存的句柄或权限被拒绝，提示用户选择
+  try {
+    dirHandle = await window.showDirectoryPicker({
+      mode: 'readwrite',
+      startIn: 'downloads'
+    });
+
+    // 保存新选择的句柄
+    await saveExportPathHandle(dirHandle);
+
+    // 更新显示
+    await updateExportPathDisplay(dirHandle);
+
+    return dirHandle;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const abortErr = new Error('用户取消了文件夹选择');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+    throw err;
+  }
+}
+
+// 选择导出路径
+async function selectExportPath() {
+  try {
+    const dirHandle = await window.showDirectoryPicker({
+      mode: 'readwrite',
+      startIn: 'downloads'
+    });
+
+    await saveExportPathHandle(dirHandle);
+    await updateExportPathDisplay(dirHandle);
+    showToast('导出路径已保存');
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.error('选择文件夹失败:', err);
+      showToast('选择文件夹失败: ' + err.message);
+    }
+  }
+}
+
+// 清除导出路径
+async function clearExportPath() {
+  try {
+    await deleteExportPathHandle();
+    document.getElementById('exportPathDisplay').value = '';
+    showToast('导出路径已清除');
+  } catch (err) {
+    console.error('清除路径失败:', err);
+    showToast('清除路径失败');
+  }
+}
+
+// 更新导出路径显示
+async function updateExportPathDisplay(dirHandle) {
+  const display = document.getElementById('exportPathDisplay');
+  if (dirHandle) {
+    display.value = dirHandle.name;
+  } else {
+    display.value = '';
+  }
+}
+
+// 加载导出路径显示
+async function loadExportPathDisplay() {
+  try {
+    const dirHandle = await getExportPathHandle().catch(() => null);
+    if (dirHandle) {
+      // 验证权限
+      try {
+        const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
+        if (permission !== 'granted') {
+          // 尝试重新请求权限
+          const newPermission = await dirHandle.requestPermission({ mode: 'readwrite' });
+          if (newPermission !== 'granted') {
+            await deleteExportPathHandle();
+            return;
+          }
+        }
+        await updateExportPathDisplay(dirHandle);
+      } catch (e) {
+        // 句柄无效，清除
+        await deleteExportPathHandle();
+      }
+    }
+  } catch (err) {
+    console.error('加载导出路径失败:', err);
+  }
 }

@@ -47,9 +47,23 @@
     .back-btn { background: #666; margin-bottom: 10px; }
     .back-btn:hover { background: #555; }
     .empty { text-align: center; color: #999; padding: 20px; font-size: 13px; }
-    .wx-article-item { padding: 10px; border: 1px solid #eee; border-radius: 4px; margin-bottom: 8px; }
-    .wx-article-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-    .wx-article-url { color: #999; font-size: 11px; word-break: break-all; }
+    .wx-article-item { padding: 12px; border: 1px solid #eee; border-radius: 6px; margin-bottom: 10px; transition: border-color 0.2s; }
+    .wx-article-item:hover { border-color: #07c160; }
+    .wx-article-header { margin-bottom: 6px; }
+    .wx-article-title-link { font-weight: 600; font-size: 14px; color: #333; text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wx-article-title-link:hover { color: #07c160; }
+    .wx-article-meta { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 12px; }
+    .meta-account { color: #666; }
+    .meta-time { color: #999; }
+    .meta-region { color: #999; font-size: 11px; }
+    .wx-article-actions { display: flex; gap: 6px; }
+    .action-btn { padding: 4px 10px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; }
+    .copy-content-btn { background: #07c160; color: white; }
+    .copy-content-btn:hover { background: #06ad56; }
+    .export-btn { background: #1890ff; color: white; }
+    .export-btn:hover { background: #1677d2; }
+    .delete-btn { background: #f0f0f0; color: #666; }
+    .delete-btn:hover { background: #e0e0e0; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
     .side-actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px; }
@@ -83,6 +97,71 @@
     }
     #refreshCachedBtn:hover {
       text-decoration: underline;
+    }
+    .export-account-btn {
+      cursor: pointer;
+      color: #666;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      transition: all 0.2s;
+    }
+    .export-account-btn:hover {
+      background: #e0e0e0;
+      color: #1890ff;
+    }
+    .import-export-section {
+      padding: 15px;
+      background: #f9f9f9;
+      border-radius: 4px;
+      margin-top: 15px;
+      border-top: 1px solid #eee;
+    }
+    .import-export-section h4 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #333;
+    }
+    .import-export-btns {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .import-export-btns button {
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+    .export-path-section {
+      padding: 15px;
+      background: #f9f9f9;
+      border-radius: 4px;
+      margin-top: 15px;
+      border-top: 1px solid #eee;
+    }
+    .export-path-section h4 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #333;
+    }
+    #importFileInput {
+      display: none;
+    }
+    .import-stats {
+      font-size: 12px;
+      color: #666;
+      margin-top: 10px;
+    }
+    .analyze-account-btn {
+      cursor: pointer;
+      color: #666;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      transition: all 0.2s;
+    }
+    .analyze-account-btn:hover {
+      background: #e0e0e0;
+      color: #ff9800;
     }
   </style>
 </head>
@@ -150,11 +229,13 @@
       </div>
 
       <div class="right-panel" id="wxRightPanel">
-        <div class="side-actions">
-          <button id="copyAllArticlesBtn" class="side-btn" style="background: #ff6b6b;">复制所有</button>
-          <button id="deleteAllArticlesBtn" class="side-btn" style="background: #f44336;">删除所有</button>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div style="font-weight: 600; font-size: 13px;">已保存的文章</div>
+          <div class="icon-group">
+            <button id="copyAllArticlesBtn" class="icon-btn" title="复制所有" style="color: #ff6b6b;">📋</button>
+            <button id="deleteAllArticlesBtn" class="icon-btn" title="删除所有" style="color: #f44336;">🗑️</button>
+          </div>
         </div>
-        <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">已保存的文章</div>
         <div id="wxArticlesList" class="results"></div>
       </div>
     </div>
@@ -168,7 +249,13 @@
   <div id="zhihu-tab" class="tab-content">
     <div class="main-container" id="zhMainContainer">
       <div class="left-panel">
-        <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">已保存的文章</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div style="font-weight: 600; font-size: 13px;">已保存的文章</div>
+          <div class="icon-group">
+            <button id="copyAllZhihuBtn" class="icon-btn" title="复制所有" style="color: #0084ff;">📋</button>
+            <button id="deleteAllZhihuBtn" class="icon-btn" title="删除所有" style="color: #f44336;">🗑️</button>
+          </div>
+        </div>
         <div id="zhArticlesList" class="results"></div>
       </div>
 
@@ -176,10 +263,6 @@
         <div style="margin-bottom: 15px;">
           <input type="text" id="zhihuUrlInput" placeholder="输入知乎链接（可选）" style="width: 100%; margin-bottom: 8px;">
           <button id="extractZhihuBtn" style="width: 100%; background: #0084ff;">提取知乎内容</button>
-        </div>
-        <div class="side-actions">
-          <button id="copyAllZhihuBtn" class="side-btn" style="background: #0084ff;">复制所有</button>
-          <button id="deleteAllZhihuBtn" class="side-btn" style="background: #f44336;">删除所有</button>
         </div>
       </div>
     </div>
@@ -222,6 +305,27 @@
       </div>
 
       <div id="accountsList" style="margin-bottom: 15px;"></div>
+
+      <div class="import-export-section">
+        <h4>数据导入/导出</h4>
+        <p style="font-size: 11px; color: #999; margin-bottom: 10px;">导出所有公众号的文章缓存数据（不包含账号配置信息），或导入之前导出的数据。</p>
+        <div class="import-export-btns">
+          <button id="exportAllDataBtn" style="background: #2196f3;">📤 导出全部数据</button>
+          <button id="importDataBtn" style="background: #ff9800;">📥 导入数据</button>
+          <input type="file" id="importFileInput" accept=".json">
+        </div>
+        <div id="importStats" class="import-stats" style="display: none;"></div>
+      </div>
+
+      <div class="export-path-section">
+        <h4>导出路径设置</h4>
+        <p style="font-size: 11px; color: #999; margin-bottom: 10px;">设置默认导出文件夹，之后的导出操作将自动使用此路径。</p>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="text" id="exportPathDisplay" placeholder="未设置导出路径" readonly style="flex: 1; background: #f5f5f5; cursor: pointer;">
+          <button id="selectExportPathBtn" style="background: #4caf50;">📁 选择文件夹</button>
+          <button id="clearExportPathBtn" style="background: #f44336;">清除</button>
+        </div>
+      </div>
 
       <div class="modal-buttons">
         <button id="cancelSettingsBtn" style="background: #666;">取消</button>

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>账号分析 - 微信公众号助手</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding: 15px 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .header h1 {
+      font-size: 20px;
+      color: #333;
+    }
+    .header .account-name {
+      color: #07c160;
+      font-weight: 600;
+    }
+    .back-btn {
+      padding: 8px 16px;
+      background: #666;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .back-btn:hover { background: #555; }
+
+    /* 统计卡片 */
+    .stat-cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 20px;
+      border-radius: 8px;
+      color: white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .stat-card.blue {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .stat-card.green {
+      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    }
+    .stat-card.orange {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .stat-card.purple {
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
+    .stat-value {
+      font-size: 28px;
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .stat-label {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+
+    /* 图表容器 */
+    .chart-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .chart-container {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .chart-container.full {
+      grid-column: 1 / -1;
+    }
+    .chart-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #333;
+    }
+    .chart-wrapper {
+      position: relative;
+      height: 280px;
+    }
+
+    /* 文章列表 */
+    .articles-section {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #333;
+    }
+    .article-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .article-table th,
+    .article-table td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+    }
+    .article-table th {
+      background: #f5f5f5;
+      font-size: 13px;
+      color: #666;
+      font-weight: 600;
+    }
+    .article-table tr:hover {
+      background: #f9f9f9;
+    }
+    .article-title {
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .article-title a {
+      color: #07c160;
+      text-decoration: none;
+    }
+    .article-title a:hover {
+      text-decoration: underline;
+    }
+    .rank-badge {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      line-height: 24px;
+      text-align: center;
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .rank-1 { background: #ffd700; color: #333; }
+    .rank-2 { background: #c0c0c0; color: #333; }
+    .rank-3 { background: #cd7f32; color: #333; }
+    .rank-other { background: #f0f0f0; color: #666; }
+
+    /* 加载状态 */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+
+    /* 时间分布热力图 */
+    .heatmap {
+      display: grid;
+      grid-template-columns: 50px repeat(7, 1fr);
+      gap: 2px;
+      margin-top: 15px;
+    }
+    .heatmap-label {
+      font-size: 11px;
+      color: #666;
+      display: flex;
+      align-items: center;
+    }
+    .heatmap-cell {
+      aspect-ratio: 1;
+      border-radius: 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: white;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .heatmap-cell:hover {
+      transform: scale(1.1);
+    }
+    .heatmap-day {
+      font-size: 10px;
+      color: #666;
+      text-align: center;
+    }
+    .heatmap-legend {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: #666;
+    }
+    .legend-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+    }
+
+    /* 原生图表样式 */
+    .simple-chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      height: 200px;
+      padding: 10px 0;
+    }
+    .chart-bar {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      height: 100%;
+    }
+    .chart-bar-inner {
+      width: 100%;
+      border-radius: 4px 4px 0 0;
+      min-height: 1px;
+      position: relative;
+      transition: opacity 0.2s;
+    }
+    .chart-bar-inner:hover {
+      opacity: 0.8;
+    }
+    .chart-bar-inner::after {
+      content: attr(data-value);
+      position: absolute;
+      top: -20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      color: #666;
+      white-space: nowrap;
+    }
+    .chart-label {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+    }
+
+    /* 折线图样式 */
+    .line-chart-container {
+      position: relative;
+      height: 240px;
+      padding: 20px 10px 30px 45px;
+    }
+    .line-chart-svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+    .line-grid {
+      stroke: #f0f0f0;
+      stroke-width: 1;
+    }
+    .line-axis {
+      stroke: #ddd;
+      stroke-width: 1;
+    }
+    .line-path {
+      fill: none;
+      stroke: #07c160;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .line-area {
+      fill: url(#lineGradient);
+      opacity: 0.3;
+    }
+    .line-point {
+      fill: #07c160;
+      stroke: white;
+      stroke-width: 2;
+      cursor: pointer;
+      transition: r 0.2s;
+    }
+    .line-point:hover {
+      r: 6;
+    }
+    .line-y-label {
+      position: absolute;
+      left: 0;
+      font-size: 10px;
+      color: #999;
+      transform: translateY(50%);
+    }
+    .line-x-label {
+      position: absolute;
+      bottom: 0;
+      font-size: 10px;
+      color: #999;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+    .line-tooltip {
+      position: absolute;
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+      z-index: 10;
+    }
+    .line-tooltip.visible {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 头部 -->
+    <div class="header">
+      <div>
+        <h1>📊 账号分析</h1>
+        <span class="account-name" id="accountName">加载中...</span>
+      </div>
+      <button class="back-btn" id="closeBtn">关闭</button>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="stat-cards">
+      <div class="stat-card blue">
+        <div class="stat-value" id="totalArticles">-</div>
+        <div class="stat-label">总文章数</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-value" id="totalReads">-</div>
+        <div class="stat-label">总阅读量</div>
+      </div>
+      <div class="stat-card orange">
+        <div class="stat-value" id="avgReads">-</div>
+        <div class="stat-label">平均阅读量</div>
+      </div>
+      <div class="stat-card purple">
+        <div class="stat-value" id="totalInteractions">-</div>
+        <div class="stat-label">总互动数</div>
+      </div>
+    </div>
+
+    <!-- 图表区域 -->
+    <div class="chart-row">
+      <div class="chart-container">
+        <div class="chart-title">📈 阅读量趋势（最近30天）</div>
+        <div class="line-chart-container" id="trendChart"></div>
+      </div>
+      <div class="chart-container">
+        <div class="chart-title">📊 互动指标对比</div>
+        <div class="simple-chart" id="interactionChart"></div>
+      </div>
+    </div>
+
+    <!-- 热门文章 -->
+    <div class="articles-section">
+      <div class="section-title">🔥 热门文章 TOP10</div>
+      <table class="article-table">
+        <thead>
+          <tr>
+            <th width="50">排名</th>
+            <th>文章标题</th>
+            <th width="100">发布时间</th>
+            <th width="100">阅读量</th>
+            <th width="80">点赞</th>
+            <th width="80">互动率</th>
+          </tr>
+        </thead>
+        <tbody id="topArticlesBody">
+          <tr><td colspan="6" class="loading">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="analysis.js"></script>
+</body>
+</html>
