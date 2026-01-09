@@ -22,6 +22,43 @@ let rateLimitedQueue = []; // 限流时剩余未获取的文章队列
 let rateLimitedLoadingId = null; // 限流时的 loadingId
 let rateLimitedAllArticles = null; // 限流时的全部文章列表
 
+// ============= 智能增量更新相关函数 =============
+
+// 获取今天的日期字符串 YYYY-MM-DD
+function getTodayDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// 检查今日是否已更新
+async function isUpdatedToday(fakeid) {
+  const data = await chrome.storage.local.get(['dailyUpdateRecord']);
+  const record = data.dailyUpdateRecord?.[fakeid];
+  return record?.lastUpdateDate === getTodayDate();
+}
+
+// 记录今日已更新
+async function markUpdatedToday(fakeid) {
+  const data = await chrome.storage.local.get(['dailyUpdateRecord']);
+  const records = data.dailyUpdateRecord || {};
+  records[fakeid] = {
+    lastUpdateDate: getTodayDate(),
+    lastUpdateTime: Date.now()
+  };
+  await chrome.storage.local.set({ dailyUpdateRecord: records });
+}
+
+// 相对时间格式化
+function formatRelativeTime(timestamp) {
+  const diff = Date.now() - timestamp;
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}天前`;
+  if (hours > 0) return `${hours}小时前`;
+  const minutes = Math.floor(diff / (1000 * 60));
+  return minutes > 0 ? `${minutes}分钟前` : '刚刚';
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', async () => {
   await checkAuthStatus();
@@ -86,12 +123,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   loadWxArticles();
   loadZhihuArticles();
+  renderHomeCachedAccountsList();
+
+  // 首页刷新缓存按钮
+  document.getElementById('refreshCachedBtn').addEventListener('click', renderHomeCachedAccountsList);
 
   // 监听 storage 变化自动刷新列表
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local') {
       if (changes.articles) loadWxArticles();
       if (changes.zhihuArticles) loadZhihuArticles();
+      if (changes.articleCache || changes.accountConfigs || changes.dailyUpdateRecord) renderHomeCachedAccountsList();
       // 检测登录成功，关闭登录标签页
       if (changes.token && changes.token.newValue && loginTabId) {
         chrome.tabs.remove(loginTabId);
@@ -386,6 +428,95 @@ function displayAccounts(accounts) {
   });
 }
 
+// 智能增量更新：只获取最近3天的文章并合并到已有缓存
+async function incrementalUpdate(fakeid) {
+  console.log(`[incrementalUpdate] 开始增量更新, fakeid: ${fakeid}`);
+  const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+
+  // 1. 从已有缓存中读取文章
+  const data = await chrome.storage.local.get(['articleCache']);
+  const cachedData = data.articleCache?.[fakeid]?.data || [];
+
+  // 2. 获取最新的文章列表（只获取最近3天的）
+  try {
+    // 收集最近3天的文章
+    const collectRecentArticles = async () => {
+      let articles = [];
+      let pageBegin = 0;
+      const pageCount = 20;
+
+      while (true) {
+        const response = await fetch(`https://mp.weixin.qq.com/cgi-bin/appmsg?action=list_ex&token=${currentAuth.token}&lang=zh_CN&f=json&ajax=1&random=${Math.random()}&fakeid=${fakeid}&type=9&query=&begin=${pageBegin}&count=${pageCount}`, {
+          headers: { 'Cookie': currentAuth.cookie }
+        });
+        const respData = await response.json();
+
+        if (respData.base_resp?.ret !== 0 || !respData.app_msg_list?.length) break;
+
+        for (const art of respData.app_msg_list) {
+          // 如果文章超过3天，停止收集
+          if (art.create_time * 1000 < threeDaysAgo) {
+            return articles;
+          }
+          articles.push({
+            title: art.title,
+            link: art.link,
+            create_time: art.create_time
+          });
+        }
+
+        pageBegin += pageCount;
+        // 防止无限循环，最多获取10页（约200篇）
+        if (pageBegin >= 200) break;
+        await new Promise(r => setTimeout(r, 500)); // 短暂延迟
+      }
+      return articles;
+    };
+
+    const recentArticles = await collectRecentArticles();
+    console.log(`[incrementalUpdate] 最近3天的文章数: ${recentArticles.length}`);
+
+    // 3. 合并文章（去重，新文章覆盖旧文章）
+    const articleMap = new Map();
+
+    // 先添加已有缓存的统计增强数据
+    cachedData.forEach(art => {
+      if (art.link) {
+        articleMap.set(art.link, art);
+      }
+    });
+
+    // 用新文章列表更新（保留统计信息）
+    recentArticles.forEach(art => {
+      if (art.link && articleMap.has(art.link)) {
+        // 保留已有统计数据
+        const existing = articleMap.get(art.link);
+        articleMap.set(art.link, {
+          ...existing,
+          title: art.title,
+          create_time: art.create_time
+        });
+      } else if (art.link) {
+        articleMap.set(art.link, art);
+      }
+    });
+
+    const mergedArticles = Array.from(articleMap.values())
+      .sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
+
+    console.log(`[incrementalUpdate] 合并后文章数: ${mergedArticles.length}`);
+
+    // 4. 保存更新后的缓存
+    await saveArticleCache(fakeid, mergedArticles);
+
+    return mergedArticles;
+
+  } catch (e) {
+    console.error(`[incrementalUpdate] 增量更新失败:`, e);
+    return cachedData; // 出错时返回原缓存
+  }
+}
+
 // 加载文章列表
 async function loadArticles(fakeid, page = 0, forceRefresh = false) {
   const loadingId = ++currentLoadingId; // 生成新的加载ID
@@ -408,24 +539,63 @@ async function loadArticles(fakeid, page = 0, forceRefresh = false) {
   const isEnhanced = enableEnhancedMode && accountConfig && accountConfig.uin && accountConfig.key && accountConfig.pass_ticket;
 
   // 显示/隐藏缓存开关并同步状态
+  const exportFullLabel = document.getElementById('exportFullLabel');
+  const exportFullToggle = document.getElementById('exportFullToggle');
   if (isEnhanced && accountConfigs[fakeid]) {
     cacheToggleLabel.style.display = 'flex';
     cacheToggle.checked = accountConfigs[fakeid].enableCache !== false;
+    // 显示导出全量开关
+    exportFullLabel.style.display = 'flex';
   } else {
     cacheToggleLabel.style.display = 'none';
+    exportFullLabel.style.display = 'none';
   }
 
-  // 如果启用缓存且非强制刷新，尝试读取缓存
+  // 如果启用缓存且非强制刷新，尝试读取缓存并检查是否需要增量更新
   if (!forceRefresh && isEnhanced && accountConfig.enableCache !== false) {
     const cached = await loadArticleCache(fakeid);
+    const updatedToday = await isUpdatedToday(fakeid);
+
     if (cached && cached.length > 0) {
-      enhancedArticlesList = cached;
-      currentArticlesList = cached;
-      displayEnhancedArticles(cached);
-      // 只有有阅读数据时才显示排序按钮
-      const hasStats = cached.some(a => a.read_num !== undefined);
-      sortBar.style.display = hasStats ? 'flex' : 'none';
-      document.getElementById('articlePagination').style.display = 'none';
+      // 如果今日已更新，直接使用缓存
+      if (updatedToday) {
+        console.log(`[loadArticles] 今日已更新，直接使用缓存, 文章数: ${cached.length}`);
+        enhancedArticlesList = cached;
+        currentArticlesList = cached;
+        displayEnhancedArticles(cached);
+        const hasStats = cached.some(a => a.read_num !== undefined);
+        sortBar.style.display = hasStats ? 'flex' : 'none';
+        document.getElementById('articlePagination').style.display = 'none';
+        return;
+      }
+
+      // 今日未更新，执行增量更新
+      console.log(`[loadArticles] 今日未更新，执行增量更新`);
+      progressEl.style.display = 'inline';
+      progressEl.textContent = '正在增量更新...';
+      articlesEl.innerHTML = '<div class="empty">正在增量更新...</div>';
+
+      // 后台执行增量更新
+      incrementalUpdate(fakeid).then(updatedArticles => {
+        console.log(`[loadArticles] 增量更新完成, 文章数: ${updatedArticles.length}`);
+        enhancedArticlesList = updatedArticles;
+        currentArticlesList = updatedArticles;
+        displayEnhancedArticles(updatedArticles);
+        const hasStats = updatedArticles.some(a => a.read_num !== undefined);
+        sortBar.style.display = hasStats ? 'flex' : 'none';
+        document.getElementById('articlePagination').style.display = 'none';
+        progressEl.style.display = 'none';
+      }).catch(e => {
+        console.error(`[loadArticles] 增量更新失败:`, e);
+        // 失败时仍然显示原缓存
+        enhancedArticlesList = cached;
+        currentArticlesList = cached;
+        displayEnhancedArticles(cached);
+        const hasStats = cached.some(a => a.read_num !== undefined);
+        sortBar.style.display = hasStats ? 'flex' : 'none';
+        document.getElementById('articlePagination').style.display = 'none';
+        progressEl.style.display = 'none';
+      });
       return;
     }
   }
@@ -925,6 +1095,8 @@ async function saveArticleCache(fakeid, articles) {
     }
   }
   await chrome.storage.local.set({ articleCache: allCache });
+  // 记录今日已更新
+  await markUpdatedToday(fakeid);
 }
 
 // 实时更新单篇文章的阅读量显示
@@ -1072,6 +1244,10 @@ function displayArticles(articles) {
 
 // 视图切换
 function showSearchView() {
+  // 中断正在进行的加载
+  currentLoadingId++;
+  console.log('[showSearchView] 中断后台请求, currentLoadingId:', currentLoadingId);
+
   document.getElementById('searchView').style.display = 'block';
   document.getElementById('articleView').style.display = 'none';
   document.getElementById('articlePagination').style.display = 'none';
@@ -1310,19 +1486,78 @@ async function exportSingleArticle(url, title) {
   setTimeout(() => btn.textContent = originalText, 2000);
 }
 
-// 导出当前页文章
+// 生成全量导出内容（包含统计信息）
+function generateFullExportContent(article, content) {
+  let text = `标题：${article.title}\n`;
+  text += `链接：${article.link}\n`;
+
+  // 添加发布时间
+  if (article.create_time) {
+    text += `发布时间：${new Date(article.create_time * 1000).toLocaleString()}\n`;
+  }
+
+  // 添加统计数据
+  if (article.read_num !== undefined || article.like_num !== undefined ||
+      article.share_num !== undefined || article.star_num !== undefined ||
+      article.comment_count !== undefined) {
+    text += `\n======== 数据统计 ========\n`;
+    if (article.read_num !== undefined) text += `阅读量：${article.read_num.toLocaleString()}\n`;
+    if (article.like_num !== undefined) text += `点赞数：${article.like_num.toLocaleString()}\n`;
+    if (article.share_num !== undefined) text += `分享数：${article.share_num.toLocaleString()}\n`;
+    if (article.star_num !== undefined) text += `收藏数：${article.star_num.toLocaleString()}\n`;
+    if (article.comment_count !== undefined) text += `评论数：${article.comment_count.toLocaleString()}\n`;
+  }
+
+  // 添加评论内容
+  if (article.comments && article.comments.length > 0) {
+    text += `\n======== 精选评论 ========\n`;
+    article.comments.forEach((c, idx) => {
+      text += `\n【评论 ${idx + 1}】\n`;
+      if (c.nick_name) text += `用户：${c.nick_name}\n`;
+      if (c.content) text += `内容：${c.content}\n`;
+      if (c.create_time) text += `时间：${new Date(c.create_time * 1000).toLocaleString()}\n`;
+      if (c.like_num) text += `点赞：${c.like_num}\n`;
+    });
+  }
+
+  text += `\n======== 文章内容 ========\n\n${content}`;
+  return text;
+}
+
+// 导出当前页文章（前20篇）
 async function exportCurrentArticles() {
   const btn = document.getElementById('exportCurrentBtn');
   btn.textContent = '导出中...';
   btn.disabled = true;
 
-  for (const art of currentArticlesList) {
+  // 获取当前页显示的文章（前20篇）
+  const pageSize = 20;
+  let articlesToExport = currentArticlesList.slice(0, pageSize);
+  const exportFull = document.getElementById('exportFullToggle')?.checked;
+
+  if (!articlesToExport || articlesToExport.length === 0) {
+    showToast('没有可导出的文章');
+    btn.textContent = '导出当前';
+    btn.disabled = false;
+    return;
+  }
+
+  for (const art of articlesToExport) {
+    if (stopExport) break;
     const result = await fetchArticleContent(art.link);
     let finalTitle = result.title || art.title;
     if (finalTitle.startsWith('无标题')) {
       finalTitle = extractTimeFromContent(result.content) || finalTitle;
     }
-    const text = `标题：${finalTitle}\n\n内容：${result.content}`;
+
+    let text;
+    if (exportFull) {
+      // 使用文章的统计数据（如果有）
+      const fullArticle = currentArticlesList.find(a => a.link === art.link) || art;
+      text = generateFullExportContent(fullArticle, result.content);
+    } else {
+      text = `标题：${finalTitle}\n\n内容：${result.content}`;
+    }
     downloadTextFile(finalTitle, text);
     await new Promise(resolve => setTimeout(resolve, 500));
   }
@@ -1339,6 +1574,49 @@ async function exportCurrentArticles() {
 let stopExport = false;
 
 async function exportAllArticles() {
+  const exportFull = document.getElementById('exportFullToggle')?.checked;
+
+  // 优先尝试从缓存导出
+  const cached = await loadArticleCache(currentFakeid);
+  if (cached && cached.length > 0) {
+    const useCache = confirm(`检测到缓存中有 ${cached.length} 篇文章，是否直接从缓存导出？\n\n确定=从缓存导出（快速）\n取消=从服务器获取全部文章（较慢）`);
+    if (useCache) {
+      const btn = document.getElementById('exportAllBtn');
+      const originalText = btn.textContent;
+      btn.textContent = '导出中...';
+      btn.disabled = true;
+
+      let exportedCount = 0;
+      for (const art of cached) {
+        if (stopExport) break;
+        const result = await fetchArticleContent(art.link);
+        let finalTitle = result.title || art.title;
+        if (finalTitle.startsWith('无标题')) {
+          finalTitle = extractTimeFromContent(result.content) || finalTitle;
+        }
+
+        let text;
+        if (exportFull) {
+          text = generateFullExportContent(art, result.content);
+        } else {
+          text = `标题：${finalTitle}\n\n内容：${result.content}`;
+        }
+        downloadTextFile(finalTitle, text);
+        exportedCount++;
+        btn.textContent = `导出中 (${exportedCount}/${cached.length})`;
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      btn.textContent = `已完成 (${exportedCount})`;
+      btn.disabled = false;
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }, 2000);
+      return;
+    }
+  }
+
   // 检查是否有未完成的导出任务
   const savedProgress = await chrome.storage.local.get(['exportProgress']);
   let startPage = 0;
@@ -1397,7 +1675,16 @@ async function exportAllArticles() {
           if (finalTitle.startsWith('无标题')) {
             finalTitle = extractTimeFromContent(result.content) || finalTitle;
           }
-          downloadTextFile(finalTitle, `标题：${finalTitle}\n\n内容：${result.content}`);
+
+          let text;
+          if (exportFull) {
+            // 尝试从缓存中获取带统计数据的文章
+            const fullArticle = cached.find(a => a.link === art.link) || art;
+            text = generateFullExportContent(fullArticle, result.content);
+          } else {
+            text = `标题：${finalTitle}\n\n内容：${result.content}`;
+          }
+          downloadTextFile(finalTitle, text);
           exportedCount++;
           btn.textContent = `停止 (${exportedCount})`;
           await chrome.storage.local.set({ exportProgress: { fakeid: currentFakeid, page, exportedCount } });
@@ -1620,7 +1907,6 @@ async function openSettingsModal() {
   document.getElementById('enableEnhanced').checked = data.enableEnhancedMode || false;
   document.getElementById('globalUin').value = globalUin;
   renderAccountsList();
-  renderCachedAccountsList();
   modal.style.display = 'flex';
 
   // 绑定搜索账号事件
@@ -1740,37 +2026,60 @@ function renderAccountsList() {
   });
 }
 
-// 缓存账号列表分页状态
-let cachedAccountsPage = 0;
-const CACHED_ACCOUNTS_PER_PAGE = 5;
-const MAX_CACHED_ACCOUNTS = 10;
+// 缓存账号列表分页状态（首页）
+let homeCachedAccountsPage = 0;
+const HOME_CACHED_ACCOUNTS_PER_PAGE = 3;
+// 首页缓存账号文章排序状态
+const homeArticleSortState = {}; // { fakeid: 'time' | 'read' | 'like' | 'share' | 'comment' }
+// 首页缓存账号展开状态
+const homeAccountExpandedState = {}; // { fakeid: true/false }
 
-// 渲染缓存账号列表
-async function renderCachedAccountsList() {
-  const container = document.getElementById('cachedAccountsList');
-  const data = await chrome.storage.local.get(['articleCache', 'accountConfigs']);
+// 排序文章列表
+function sortArticlesBy(articles, sortBy) {
+  const sorted = [...articles];
+  switch (sortBy) {
+    case 'read':
+      sorted.sort((a, b) => (b.read_num || 0) - (a.read_num || 0));
+      break;
+    case 'like':
+      sorted.sort((a, b) => (b.like_num || 0) - (a.like_num || 0));
+      break;
+    case 'share':
+      sorted.sort((a, b) => (b.share_num || 0) - (a.share_num || 0));
+      break;
+    case 'comment':
+      sorted.sort((a, b) => (b.comment_count || 0) - (a.comment_count || 0));
+      break;
+    default:
+      sorted.sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
+  }
+  return sorted;
+}
+
+// 渲染首页缓存账号列表
+async function renderHomeCachedAccountsList() {
+  const container = document.getElementById('homeCachedAccountsList');
+  const section = document.getElementById('cachedAccountsSection');
+  const data = await chrome.storage.local.get(['articleCache', 'accountConfigs', 'dailyUpdateRecord']);
   const allCache = data.articleCache || {};
   const configs = data.accountConfigs || {};
+  const updateRecords = data.dailyUpdateRecord || {};
 
   // 按更新时间排序，最新的在前面
   const cachedAccounts = Object.entries(allCache)
     .filter(([_, cache]) => cache.data && cache.data.length > 0)
-    .sort((a, b) => b[1].timestamp - a[1].timestamp)
-    .slice(0, MAX_CACHED_ACCOUNTS);
+    .sort((a, b) => b[1].timestamp - a[1].timestamp);
 
   if (cachedAccounts.length === 0) {
-    container.innerHTML = '';
+    section.style.display = 'none';
     return;
   }
 
-  const totalPages = Math.ceil(cachedAccounts.length / CACHED_ACCOUNTS_PER_PAGE);
-  const startIdx = cachedAccountsPage * CACHED_ACCOUNTS_PER_PAGE;
-  const pageAccounts = cachedAccounts.slice(startIdx, startIdx + CACHED_ACCOUNTS_PER_PAGE);
+  section.style.display = 'block';
 
-  const formatTime = (ts) => {
-    const d = new Date(ts);
-    return `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
-  };
+  const totalPages = Math.ceil(cachedAccounts.length / HOME_CACHED_ACCOUNTS_PER_PAGE);
+  const startIdx = homeCachedAccountsPage * HOME_CACHED_ACCOUNTS_PER_PAGE;
+  const pageAccounts = cachedAccounts.slice(startIdx, startIdx + HOME_CACHED_ACCOUNTS_PER_PAGE);
 
   const calcStats = (articles) => {
     let totalRead = 0, totalLike = 0, totalShare = 0, totalComment = 0, withStats = 0;
@@ -1787,49 +2096,76 @@ async function renderCachedAccountsList() {
   };
 
   container.innerHTML = `
-    <div style="font-size: 12px; color: #666; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
-      <span>已缓存数据 (${cachedAccounts.length}个账号)</span>
-      ${totalPages > 1 ? `<span>第${cachedAccountsPage + 1}/${totalPages}页</span>` : ''}
-    </div>
-    ${pageAccounts.map(([fakeid, cache]) => {
-      const name = configs[fakeid]?.name || fakeid.slice(0, 8) + '...';
-      const articles = cache.data || [];
-      const stats = calcStats(articles);
-      return `
-        <div class="cached-account-item" data-fakeid="${fakeid}" style="border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 6px; font-size: 11px;">
-          <div class="cached-account-header" data-fakeid="${fakeid}" style="padding: 8px; cursor: pointer; background: #fafafa;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 600; font-size: 12px;">${name}</span>
-              <span class="expand-btn" style="color: #1890ff; font-size: 10px;">▼ 展开</span>
-            </div>
-            <div style="color: #888; margin-top: 4px;">
-              <span>📄 ${articles.length}篇</span>
-              <span style="margin-left: 8px;">📊 ${stats.withStats}篇有数据</span>
-              <span style="margin-left: 8px;">🕐 ${formatTime(cache.timestamp)}</span>
-            </div>
-            <div style="color: #666; margin-top: 2px;">
-              👁 ${stats.totalRead.toLocaleString()} · 👍 ${stats.totalLike.toLocaleString()} · 🔗 ${stats.totalShare.toLocaleString()} · 💬 ${stats.totalComment.toLocaleString()}
-            </div>
-          </div>
-          <div class="cached-articles-list" data-fakeid="${fakeid}" style="display: none; max-height: 200px; overflow-y: auto; border-top: 1px solid #eee;">
-            ${articles.slice(0, 20).map((a, i) => `
-              <div style="padding: 6px 8px; border-bottom: 1px solid #f0f0f0; ${i % 2 ? 'background: #fafafa;' : ''}">
-                <div style="font-size: 11px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${a.title}">${a.title}</div>
-                <div style="font-size: 10px; color: #999; margin-top: 2px;">
-                  ${a.read_num !== undefined ? `👁${a.read_num.toLocaleString()} 👍${(a.like_num||0).toLocaleString()} 🔗${(a.share_num||0).toLocaleString()} 💬${a.comment_count||0}` : '暂无数据'}
-                  <span style="margin-left: 8px;">${new Date(a.create_time * 1000).toLocaleDateString()}</span>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      ${pageAccounts.map(([fakeid, cache]) => {
+        const name = configs[fakeid]?.name || fakeid.slice(0, 8) + '...';
+        let articles = cache.data || [];
+        const stats = calcStats(articles);
+        const currentSort = homeArticleSortState[fakeid] || 'time';
+        const isExpanded = homeAccountExpandedState[fakeid] || false;
+        // 检查今日是否已更新
+        const updatedToday = updateRecords[fakeid]?.lastUpdateDate === getTodayDate();
+        const updateTimeStr = updateRecords[fakeid]?.lastUpdateTime
+          ? formatRelativeTime(updateRecords[fakeid].lastUpdateTime)
+          : formatRelativeTime(cache.timestamp);
+        // 应用排序
+        articles = sortArticlesBy(articles, currentSort);
+        return `
+          <div class="cached-account-item" data-fakeid="${fakeid}" style="border: 1px solid #e0e0e0; border-radius: 4px; cursor: pointer; transition: background 0.2s;">
+            <div class="cached-account-header" data-fakeid="${fakeid}" style="padding: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-weight: 600; font-size: 13px; color: #333;">${name}</span>
+                  ${updatedToday ? '<span style="background: #52c41a; color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px;">今日已更新</span>' : ''}
                 </div>
+                <span class="expand-btn" style="color: #1890ff; font-size: 10px;">${isExpanded ? '▲ 收起' : '▼ 展开文章'}</span>
               </div>
-            `).join('')}
-            ${articles.length > 20 ? `<div style="padding: 6px; text-align: center; color: #999; font-size: 10px;">还有 ${articles.length - 20} 篇...</div>` : ''}
+              <div style="color: #888; margin-top: 6px; font-size: 12px;">
+                <span>📄 ${articles.length}篇</span>
+                <span style="margin-left: 10px;">📊 ${stats.withStats}篇有数据</span>
+                <span style="margin-left: 10px;">🕐 ${updateTimeStr}</span>
+              </div>
+              <div style="color: #666; margin-top: 4px; font-size: 12px;">
+                👁 ${stats.totalRead.toLocaleString()} · 👍 ${stats.totalLike.toLocaleString()} · 🔗 ${stats.totalShare.toLocaleString()} · 💬 ${stats.totalComment.toLocaleString()}
+              </div>
+            </div>
+            <div class="cached-articles-list" data-fakeid="${fakeid}" style="display: ${isExpanded ? 'block' : 'none'}; max-height: 250px; overflow-y: auto; border-top: 1px solid #eee; background: #fafafa;">
+              <div class="article-sort-bar" style="padding: 6px 10px; border-bottom: 1px solid #eee; background: #f0f0f0; display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 11px; color: #666;">排序:</span>
+                <select class="article-sort-select" data-fakeid="${fakeid}" style="padding: 2px 6px; font-size: 11px; border: 1px solid #ddd; border-radius: 3px;">
+                  <option value="time" ${currentSort === 'time' ? 'selected' : ''}>按时间</option>
+                  <option value="read" ${currentSort === 'read' ? 'selected' : ''}>按阅读</option>
+                  <option value="like" ${currentSort === 'like' ? 'selected' : ''}>按点赞</option>
+                  <option value="share" ${currentSort === 'share' ? 'selected' : ''}>按分享</option>
+                  <option value="comment" ${currentSort === 'comment' ? 'selected' : ''}>按评论</option>
+                </select>
+              </div>
+              <div class="articles-container" data-fakeid="${fakeid}">
+                ${articles.slice(0, 20).map((a, i) => {
+                  const hasComments = a.comment_count !== undefined && a.comment_count > 0;
+                  return `
+                    <div class="home-article-item" data-link="${a.link}" style="padding: 8px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer;" ${i % 2 ? 'background: #fff;' : ''}>
+                      <div class="article-title-area" style="font-size: 12px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${a.title}">${a.title}</div>
+                      <div style="font-size: 11px; color: #999; margin-top: 2px;">
+                        ${a.read_num !== undefined ? `<span class="stat-read">👁${a.read_num.toLocaleString()}</span> <span class="stat-like">👍${(a.like_num||0).toLocaleString()}</span> <span class="stat-share">🔗${(a.share_num||0).toLocaleString()}</span>` : '暂无数据'}
+                        ${hasComments ? `<span class="stat-comment" data-link="${a.link}" style="color: #4caf50; cursor: pointer; margin-left: 4px;">💬${a.comment_count}</span>` : ''}
+                        <span style="margin-left: 8px;">${new Date(a.create_time * 1000).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+                ${articles.length > 20 ? `<div class="load-more-articles" data-fakeid="${fakeid}" data-offset="20" data-total="${articles.length}" style="padding: 8px; text-align: center; color: #1890ff; font-size: 11px; cursor: pointer;">向下滚动加载更多 (${articles.length - 20} 篇)</div>` : ''}
+              </div>
+            </div>
           </div>
-        </div>
-      `;
-    }).join('')}
+        `;
+      }).join('')}
+    </div>
     ${totalPages > 1 ? `
-      <div style="display: flex; justify-content: center; gap: 8px; margin-top: 6px;">
-        <button class="cached-page-btn" data-dir="prev" style="padding: 2px 8px; font-size: 11px;" ${cachedAccountsPage === 0 ? 'disabled' : ''}>上一页</button>
-        <button class="cached-page-btn" data-dir="next" style="padding: 2px 8px; font-size: 11px;" ${cachedAccountsPage >= totalPages - 1 ? 'disabled' : ''}>下一页</button>
+      <div style="display: flex; justify-content: center; gap: 8px; margin-top: 8px;">
+        <button class="home-cached-page-btn" data-dir="prev" style="padding: 4px 12px; font-size: 12px; background: #f0f0f0;" ${homeCachedAccountsPage === 0 ? 'disabled' : ''}>上一页</button>
+        <span style="font-size: 12px; color: #666; display: flex; align-items: center;">${homeCachedAccountsPage + 1} / ${totalPages}</span>
+        <button class="home-cached-page-btn" data-dir="next" style="padding: 4px 12px; font-size: 12px; background: #f0f0f0;" ${homeCachedAccountsPage >= totalPages - 1 ? 'disabled' : ''}>下一页</button>
       </div>
     ` : ''}
   `;
@@ -1843,22 +2179,157 @@ async function renderCachedAccountsList() {
       if (list.style.display === 'none') {
         list.style.display = 'block';
         btn.textContent = '▲ 收起';
+        homeAccountExpandedState[fakeid] = true;
       } else {
         list.style.display = 'none';
-        btn.textContent = '▼ 展开';
+        btn.textContent = '▼ 展开文章';
+        homeAccountExpandedState[fakeid] = false;
       }
     });
   });
 
   // 绑定分页事件
-  container.querySelectorAll('.cached-page-btn').forEach(btn => {
+  container.querySelectorAll('.home-cached-page-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.dir === 'prev' && cachedAccountsPage > 0) {
-        cachedAccountsPage--;
+      if (btn.dataset.dir === 'prev' && homeCachedAccountsPage > 0) {
+        homeCachedAccountsPage--;
       } else if (btn.dataset.dir === 'next') {
-        cachedAccountsPage++;
+        homeCachedAccountsPage++;
       }
-      renderCachedAccountsList();
+      renderHomeCachedAccountsList();
+    });
+  });
+
+  // 双击加载该账号的所有文章到文章视图
+  container.querySelectorAll('.cached-account-item').forEach(item => {
+    item.addEventListener('dblclick', () => {
+      const fakeid = item.dataset.fakeid;
+      loadArticles(fakeid, 0, false);
+    });
+  });
+
+  // 绑定排序选择器事件
+  container.querySelectorAll('.article-sort-select').forEach(select => {
+    select.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const fakeid = select.dataset.fakeid;
+      const newSort = select.value;
+      homeArticleSortState[fakeid] = newSort;
+      renderHomeCachedAccountsList();
+    });
+  });
+
+  // 绑定文章点击和评论点击事件
+  container.querySelectorAll('.home-article-item').forEach(item => {
+    const link = item.dataset.link;
+    const commentBtn = item.querySelector('.stat-comment');
+
+    // 点击文章打开链接
+    item.addEventListener('click', (e) => {
+      if (e.target.classList.contains('stat-comment')) return;
+      window.open(link, '_blank');
+    });
+
+    // 点击评论显示评论
+    if (commentBtn) {
+      commentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showCommentsModal(link);
+      });
+    }
+  });
+
+  // 加载更多文章按钮
+  container.querySelectorAll('.load-more-articles').forEach(loadBtn => {
+    loadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const fakeid = loadBtn.dataset.fakeid;
+      const offset = parseInt(loadBtn.dataset.offset);
+      const total = parseInt(loadBtn.dataset.total);
+      const articlesContainer = container.querySelector(`.articles-container[data-fakeid="${fakeid}"]`);
+
+      // 获取缓存中的文章数据并排序
+      chrome.storage.local.get(['articleCache'], (data) => {
+        const allCache = data.articleCache || {};
+        const cache = allCache[fakeid];
+        if (!cache || !cache.data) return;
+
+        const currentSort = homeArticleSortState[fakeid] || 'time';
+        const sortedArticles = sortArticlesBy(cache.data, currentSort);
+        const nextBatch = sortedArticles.slice(offset, offset + 20);
+
+        // 插入新文章
+        const fragment = document.createDocumentFragment();
+        nextBatch.forEach((a, i) => {
+          const div = document.createElement('div');
+          const actualIndex = offset + i;
+          const hasComments = a.comment_count !== undefined && a.comment_count > 0;
+          div.className = 'home-article-item';
+          div.dataset.link = a.link;
+          div.style.cssText = `padding: 8px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; ${actualIndex % 2 ? 'background: #fff;' : ''}`;
+          div.innerHTML = `
+            <div style="font-size: 12px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${a.title}">${a.title}</div>
+            <div style="font-size: 11px; color: #999; margin-top: 2px;">
+              ${a.read_num !== undefined ? `<span class="stat-read">👁${a.read_num.toLocaleString()}</span> <span class="stat-like">👍${(a.like_num||0).toLocaleString()}</span> <span class="stat-share">🔗${(a.share_num||0).toLocaleString()}</span>` : '暂无数据'}
+              ${hasComments ? `<span class="stat-comment" data-link="${a.link}" style="color: #4caf50; cursor: pointer; margin-left: 4px;">💬${a.comment_count}</span>` : ''}
+              <span style="margin-left: 8px;">${new Date(a.create_time * 1000).toLocaleDateString()}</span>
+            </div>
+          `;
+          // 点击文章打开链接
+          div.addEventListener('click', (e) => {
+            if (e.target.classList.contains('stat-comment')) return;
+            window.open(a.link, '_blank');
+          });
+          // 点击评论显示评论
+          const commentBtn = div.querySelector('.stat-comment');
+          if (commentBtn) {
+            commentBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              showCommentsModal(a.link);
+            });
+          }
+          fragment.appendChild(div);
+        });
+
+        // 在加载按钮前插入
+        articlesContainer.insertBefore(fragment, loadBtn);
+
+        // 更新按钮状态
+        const newOffset = offset + 20;
+        const remaining = total - newOffset;
+
+        if (remaining <= 0) {
+          loadBtn.textContent = '已全部加载';
+          loadBtn.style.cursor = 'default';
+          loadBtn.style.color = '#999';
+          loadBtn.onclick = null;
+        } else {
+          loadBtn.dataset.offset = newOffset;
+          loadBtn.textContent = `向下滚动加载更多 (${remaining} 篇)`;
+        }
+      });
+    });
+  });
+
+  // 滚动自动加载更多
+  container.querySelectorAll('.cached-articles-list').forEach(list => {
+    let isLoading = false;
+    list.addEventListener('scroll', () => {
+      if (isLoading) return;
+
+      const loadBtn = list.querySelector('.load-more-articles');
+      if (!loadBtn || loadBtn.textContent === '已全部加载') return;
+
+      const scrollTop = list.scrollTop;
+      const scrollHeight = list.scrollHeight;
+      const clientHeight = list.clientHeight;
+
+      // 当滚动到底部附近时自动加载
+      if (scrollTop + clientHeight >= scrollHeight - 50) {
+        isLoading = true;
+        loadBtn.click();
+        setTimeout(() => { isLoading = false; }, 500);
+      }
     });
   });
 }
@@ -1956,14 +2427,38 @@ function showToast(msg, duration = 2000) {
 }
 
 // 显示评论模态框
-function showCommentsModal(link) {
-  const art = enhancedArticlesList.find(a => a.link === link);
+async function showCommentsModal(link) {
+  console.log('[showCommentsModal] 查找评论, link:', link);
+
+  // 先从 enhancedArticlesList 查找
+  let art = enhancedArticlesList.find(a => a.link === link);
+
+  // 如果没找到，从缓存中查找
+  if (!art) {
+    console.log('[showCommentsModal] enhancedArticlesList 中未找到，从缓存查找');
+    const data = await chrome.storage.local.get(['articleCache']);
+    const allCache = data.articleCache || {};
+    for (const fakeid in allCache) {
+      const cached = allCache[fakeid].data || [];
+      const found = cached.find(a => a.link === link);
+      if (found) {
+        art = found;
+        console.log('[showCommentsModal] 从缓存找到, fakeid:', fakeid, 'comment_count:', art.comment_count, 'comments:', art.comments);
+        break;
+      }
+    }
+  } else {
+    console.log('[showCommentsModal] 从 enhancedArticlesList 找到, comment_count:', art.comment_count, 'comments:', art.comments);
+  }
+
   const modal = document.getElementById('commentsModal');
   const content = document.getElementById('commentsContent');
 
   if (!art || !art.comments || art.comments.length === 0) {
+    console.log('[showCommentsModal] 暂无评论, art:', !!art, 'comments:', art?.comments?.length);
     content.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">暂无评论</div>';
   } else {
+    console.log('[showCommentsModal] 显示评论, 数量:', art.comments.length);
     content.innerHTML = art.comments.map(c => `
       <div style="padding: 12px; border-bottom: 1px solid #eee;">
         <div style="display: flex; align-items: center; margin-bottom: 8px;">
