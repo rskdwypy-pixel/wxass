@@ -123,7 +123,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 导出路径设置事件
   document.getElementById('selectExportPathBtn').addEventListener('click', selectExportPath);
   document.getElementById('clearExportPathBtn').addEventListener('click', clearExportPath);
-  document.getElementById('exportPathDisplay').addEventListener('click', selectExportPath);
+  document.getElementById('exportPathDisplay').addEventListener('click', async () => {
+    if (needsReauth && cachedExportPathHandle) {
+      await requestExportPathPermission();
+    } else {
+      await selectExportPath();
+    }
+  });
 
   // 初始化导出路径显示
   loadExportPathDisplay();
@@ -434,7 +440,19 @@ function displayAccounts(accounts) {
   resultsEl.querySelectorAll('.account-item').forEach(item => {
     item.addEventListener('click', (e) => {
       if (!e.target.classList.contains('copy-btn')) {
-        loadArticles(item.dataset.fakeid);
+        const fakeid = item.dataset.fakeid;
+        // 保存账号信息到配置（如果还没有的话）
+        const accountName = item.querySelector('.account-name')?.textContent || '';
+        const accountAvatar = item.querySelector('.avatar')?.src || '';
+        if (!accountConfigs[fakeid]) {
+          accountConfigs[fakeid] = { name: accountName, avatar: accountAvatar, key: '', pass_ticket: '', enableCache: true };
+          chrome.storage.local.set({ accountConfigs });
+        } else if (!accountConfigs[fakeid].avatar && accountAvatar) {
+          // 如果配置中没有头像，补充头像
+          accountConfigs[fakeid].avatar = accountAvatar;
+          chrome.storage.local.set({ accountConfigs });
+        }
+        loadArticles(fakeid);
       }
     });
   });
@@ -999,6 +1017,10 @@ async function loadArticleStatsAsync(fakeid, allArticles, articlesToFetch, loadi
   }, 1500);
   isLoadingStats = false;
   enhancedArticlesList = allArticles;
+  currentArticlesList = allArticles;
+
+  // 显示文章列表
+  displayEnhancedArticles(allArticles);
 
   // 如果启用缓存，保存数据（包含统计数据）
   const config = accountConfigs[fakeid];
@@ -1113,7 +1135,11 @@ async function loadArticleCache(fakeid) {
 async function saveArticleCache(fakeid, articles) {
   const data = await chrome.storage.local.get(['articleCache']);
   const allCache = data.articleCache || {};
-  allCache[fakeid] = { timestamp: Date.now(), data: articles };
+
+  // 获取账号配置中的头像
+  const accountAvatar = accountConfigs[fakeid]?.avatar || '';
+
+  allCache[fakeid] = { timestamp: Date.now(), data: articles, accountAvatar };
   // 清理过期缓存
   for (const key in allCache) {
     if (Date.now() - allCache[key].timestamp > CACHE_EXPIRE_DAYS * 24 * 60 * 60 * 1000) {
@@ -1311,15 +1337,23 @@ async function loadWxArticles() {
   listEl.innerHTML = articles.map((art, idx) => {
     // 从文章中提取的账号名称
     const accountName = art.accountName || '未知账号';
+    // 账号头像
+    const accountAvatar = art.accountAvatar || '';
     // 发布时间
     const publishTime = art.publishTime || '';
     // 地区
     const region = art.region || '';
+    // 标题：如果为空则使用正文截断
+    const displayTitle = art.title || (art.content ? art.content.slice(0, 50) : '无标题');
+    const titleAttr = art.title || art.content || '';
 
     return `
       <div class="wx-article-item">
-        <div class="wx-article-header">
-          <a class="wx-article-title-link" href="${art.url}" target="_blank" title="${art.title}">${art.title}</a>
+        <div class="wx-article-header" style="display: flex; align-items: flex-start; gap: 8px;">
+          ${accountAvatar ? `<img src="${accountAvatar}" style="width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; object-fit: cover;" alt="">` : '<div style="width: 32px; height: 32px; border-radius: 50%; background: #f0f0f0; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px;">📰</div>'}
+          <div style="flex: 1; min-width: 0;">
+            <a class="wx-article-title-link" href="${art.url}" target="_blank" title="${titleAttr}">${displayTitle}</a>
+          </div>
         </div>
         <div class="wx-article-meta">
           <span class="meta-account" title="账号">${accountName}</span>
@@ -1606,8 +1640,11 @@ async function exportCurrentArticles() {
     return;
   }
 
-  for (const art of articlesToExport) {
+  showExportProgress(0, articlesToExport.length, '导出当前页');
+
+  for (let i = 0; i < articlesToExport.length; i++) {
     if (stopExport) break;
+    const art = articlesToExport[i];
     const result = await fetchArticleContent(art.link);
     let finalTitle = result.title || art.title;
     if (finalTitle.startsWith('无标题')) {
@@ -1623,9 +1660,11 @@ async function exportCurrentArticles() {
       text = `标题：${finalTitle}\n\n内容：${result.content}`;
     }
     downloadTextFile(finalTitle, text);
+    updateExportProgress(i + 1);
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 
+  hideExportProgress();
   btn.textContent = '已完成';
   btn.disabled = false;
   setTimeout(() => {
@@ -1650,6 +1689,8 @@ async function exportAllArticles() {
       btn.textContent = '导出中...';
       btn.disabled = true;
 
+      showExportProgress(0, cached.length, '从缓存导出');
+
       let exportedCount = 0;
       for (const art of cached) {
         if (stopExport) break;
@@ -1668,9 +1709,11 @@ async function exportAllArticles() {
         downloadTextFile(finalTitle, text);
         exportedCount++;
         btn.textContent = `导出中 (${exportedCount}/${cached.length})`;
+        updateExportProgress(exportedCount);
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
+      hideExportProgress();
       btn.textContent = `已完成 (${exportedCount})`;
       btn.disabled = false;
       setTimeout(() => {
@@ -1714,6 +1757,9 @@ async function exportAllArticles() {
   let exportedCount = startCount;
   let rateLimited = false;
 
+  // 显示进度条（从服务器导出时不知道总数，只显示已导出数量）
+  showExportProgress(startCount, null, startCount > 0 ? '继续导出中...' : '从服务器导出');
+
   try {
     while (!stopExport) {
       const begin = page * 5;
@@ -1725,6 +1771,7 @@ async function exportAllArticles() {
 
       if (data.base_resp?.ret === 200013) {
         rateLimited = true;
+        hideExportProgress();
         await chrome.storage.local.set({ exportProgress: { fakeid: currentFakeid, page, exportedCount } });
         alert(`已限流！进度已保存（已导出 ${exportedCount} 篇），请更换账号继续`);
         break;
@@ -1751,6 +1798,7 @@ async function exportAllArticles() {
           downloadTextFile(finalTitle, text);
           exportedCount++;
           btn.textContent = `停止 (${exportedCount})`;
+          updateExportProgress(exportedCount);
           await chrome.storage.local.set({ exportProgress: { fakeid: currentFakeid, page, exportedCount } });
           await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 1000));
         }
@@ -1763,10 +1811,12 @@ async function exportAllArticles() {
       }
     }
   } catch (e) {
+    hideExportProgress();
     await chrome.storage.local.set({ exportProgress: { fakeid: currentFakeid, page, exportedCount } });
     alert(`导出出错，进度已保存（已导出 ${exportedCount} 篇）`);
   }
 
+  hideExportProgress();
   if (!rateLimited && !stopExport) {
     await chrome.storage.local.remove(['exportProgress']);
   } else if (stopExport) {
@@ -2579,7 +2629,7 @@ function renderAccountsList() {
 
 // 缓存账号列表分页状态（首页）
 let homeCachedAccountsPage = 0;
-const HOME_CACHED_ACCOUNTS_PER_PAGE = 3;
+const HOME_CACHED_ACCOUNTS_PER_PAGE = 6;
 // 首页缓存账号文章排序状态
 const homeArticleSortState = {}; // { fakeid: 'time' | 'read' | 'like' | 'share' | 'comment' }
 // 首页缓存账号展开状态
@@ -2659,6 +2709,8 @@ async function renderHomeCachedAccountsList() {
         const updateTimeStr = updateRecords[fakeid]?.lastUpdateTime
           ? formatRelativeTime(updateRecords[fakeid].lastUpdateTime)
           : formatRelativeTime(cache.timestamp);
+        // 获取账号头像（优先从配置，其次从缓存）
+        const accountAvatar = configs[fakeid]?.avatar || cache.accountAvatar || '';
         // 应用排序
         articles = sortArticlesBy(articles, currentSort);
         return `
@@ -2666,6 +2718,7 @@ async function renderHomeCachedAccountsList() {
             <div class="cached-account-header" data-fakeid="${fakeid}" style="padding: 10px;">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; align-items: center; gap: 6px;">
+                  ${accountAvatar ? `<img src="${accountAvatar}" style="width: 24px; height: 24px; border-radius: 50%; object-fit: cover;" alt="">` : '<span style="font-size: 16px;">📰</span>'}
                   <span style="font-weight: 600; font-size: 13px; color: #333;">${name}</span>
                   ${updatedToday ? '<span style="background: #52c41a; color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px;">今日已更新</span>' : ''}
                   <span class="export-account-btn" data-fakeid="${fakeid}" title="导出该账号所有数据">📤</span>
@@ -2922,7 +2975,7 @@ async function searchAccountForSettings() {
 
     if (data.base_resp?.ret === 0 && data.list?.length > 0) {
       resultsEl.innerHTML = data.list.map(acc => `
-        <div class="search-result-item" data-fakeid="${acc.fakeid}" data-name="${acc.nickname}" style="padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+        <div class="search-result-item" data-fakeid="${acc.fakeid}" data-name="${acc.nickname}" data-avatar="${acc.round_head_img || ''}" style="padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; align-items: center; gap: 8px;">
           <img src="${acc.round_head_img}" style="width: 30px; height: 30px; border-radius: 50%;">
           <span style="font-size: 13px;">${acc.nickname}</span>
         </div>
@@ -2932,8 +2985,9 @@ async function searchAccountForSettings() {
         item.addEventListener('click', () => {
           const fakeid = item.dataset.fakeid;
           const name = item.dataset.name;
+          const avatar = item.dataset.avatar;
           if (!accountConfigs[fakeid]) {
-            accountConfigs[fakeid] = { name, key: '', pass_ticket: '', enableCache: true };
+            accountConfigs[fakeid] = { name, avatar, key: '', pass_ticket: '', enableCache: true };
             renderAccountsList();
           }
           resultsEl.style.display = 'none';
@@ -2995,6 +3049,42 @@ function showToast(msg, duration = 2000) {
   toast.textContent = msg;
   toast.style.display = 'block';
   setTimeout(() => toast.style.display = 'none', duration);
+}
+
+// 导出进度条（显示在页面顶部）
+let exportProgressTotal = 0;
+function showExportProgress(current, total = null, text = '导出中') {
+  const progressBar = document.getElementById('exportProgress');
+  const progressText = document.getElementById('exportProgressText');
+  const progressPercent = document.getElementById('exportPercent');
+
+  progressBar.style.display = 'block';
+  progressText.textContent = text;
+
+  if (total !== null) {
+    exportProgressTotal = total;
+    const percent = Math.min(100, Math.round((current / total) * 100));
+    progressPercent.textContent = percent + '%';
+  } else {
+    // 只显示数量，不显示百分比
+    progressPercent.textContent = current + ' 篇';
+  }
+}
+
+function updateExportProgress(current) {
+  const progressPercent = document.getElementById('exportPercent');
+  if (exportProgressTotal > 0) {
+    const percent = Math.min(100, Math.round((current / exportProgressTotal) * 100));
+    progressPercent.textContent = percent + '%';
+  } else {
+    progressPercent.textContent = current + ' 篇';
+  }
+}
+
+function hideExportProgress() {
+  const progressBar = document.getElementById('exportProgress');
+  progressBar.style.display = 'none';
+  exportProgressTotal = 0;
 }
 
 // 显示评论模态框
@@ -3275,8 +3365,8 @@ async function deleteExportPathHandle() {
 
 // 获取或创建导出目录
 async function getOrCreateExportDir() {
-  // 尝试从 IndexedDB 获取已保存的句柄
-  let dirHandle = await getExportPathHandle().catch(() => null);
+  // 先尝试使用缓存的句柄
+  let dirHandle = cachedExportPathHandle || await getExportPathHandle().catch(() => null);
 
   if (dirHandle) {
     // 验证句柄是否仍然有效
@@ -3284,16 +3374,23 @@ async function getOrCreateExportDir() {
       // 尝试访问目录以验证权限
       const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
+        cachedExportPathHandle = dirHandle;
         return dirHandle;
       }
-      // 请求权限
+      // 请求权限（在用户手势的上下文中）
       const newPermission = await dirHandle.requestPermission({ mode: 'readwrite' });
       if (newPermission === 'granted') {
+        cachedExportPathHandle = dirHandle;
+        // 更新显示，移除"需重新授权"标记
+        await updateExportPathDisplay(dirHandle);
+        const display = document.getElementById('exportPathDisplay');
+        display.style.color = '';
         return dirHandle;
       }
     } catch (e) {
       // 句柄无效，清除并重新选择
       await deleteExportPathHandle();
+      cachedExportPathHandle = null;
     }
   }
 
@@ -3306,9 +3403,12 @@ async function getOrCreateExportDir() {
 
     // 保存新选择的句柄
     await saveExportPathHandle(dirHandle);
+    cachedExportPathHandle = dirHandle;
 
     // 更新显示
     await updateExportPathDisplay(dirHandle);
+    const display = document.getElementById('exportPathDisplay');
+    display.style.color = '';
 
     return dirHandle;
   } catch (err) {
@@ -3330,7 +3430,10 @@ async function selectExportPath() {
     });
 
     await saveExportPathHandle(dirHandle);
+    cachedExportPathHandle = dirHandle;
     await updateExportPathDisplay(dirHandle);
+    const display = document.getElementById('exportPathDisplay');
+    display.style.color = '';
     showToast('导出路径已保存');
   } catch (err) {
     if (err.name !== 'AbortError') {
@@ -3340,11 +3443,43 @@ async function selectExportPath() {
   }
 }
 
+// 请求导出路径权限
+async function requestExportPathPermission() {
+  if (!cachedExportPathHandle) {
+    showToast('无已保存的路径，请重新选择');
+    return;
+  }
+
+  try {
+    const permission = await cachedExportPathHandle.requestPermission({ mode: 'readwrite' });
+    if (permission === 'granted') {
+      needsReauth = false;
+      const display = document.getElementById('exportPathDisplay');
+      display.style.color = '';
+      display.style.cursor = '';
+      display.title = '';
+      // 移除 (点击授权) 后缀
+      const basePath = display.value.replace('📁 ', '').replace(' (点击授权)', '');
+      display.value = '📁 ' + basePath;
+      showToast('权限已恢复');
+    } else {
+      showToast('权限请求被拒绝，请重新选择文件夹');
+    }
+  } catch (err) {
+    console.error('请求权限失败:', err);
+    // 如果 requestPermission 失败，尝试使用 verifyPermissionFile
+    showToast('权限请求失败，请重新选择文件夹');
+  }
+}
+
 // 清除导出路径
 async function clearExportPath() {
   try {
     await deleteExportPathHandle();
+    cachedExportPathHandle = null;
     document.getElementById('exportPathDisplay').value = '';
+    const display = document.getElementById('exportPathDisplay');
+    display.style.color = '';
     showToast('导出路径已清除');
   } catch (err) {
     console.error('清除路径失败:', err);
@@ -3356,32 +3491,46 @@ async function clearExportPath() {
 async function updateExportPathDisplay(dirHandle) {
   const display = document.getElementById('exportPathDisplay');
   if (dirHandle) {
-    display.value = dirHandle.name;
+    display.value = '📁 ' + dirHandle.name;
   } else {
     display.value = '';
   }
 }
+
+// 全局变量存储导出路径句柄，用于权限验证
+let cachedExportPathHandle = null;
+let needsReauth = false;
 
 // 加载导出路径显示
 async function loadExportPathDisplay() {
   try {
     const dirHandle = await getExportPathHandle().catch(() => null);
     if (dirHandle) {
+      cachedExportPathHandle = dirHandle;
       // 验证权限
       try {
         const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
-        if (permission !== 'granted') {
-          // 尝试重新请求权限
-          const newPermission = await dirHandle.requestPermission({ mode: 'readwrite' });
-          if (newPermission !== 'granted') {
-            await deleteExportPathHandle();
-            return;
+        if (permission === 'granted') {
+          // 权限已有，直接显示
+          needsReauth = false;
+          await updateExportPathDisplay(dirHandle);
+        } else {
+          // 权限未授予，显示路径名称但标记需要重新授权
+          needsReauth = true;
+          await updateExportPathDisplay(dirHandle);
+          const display = document.getElementById('exportPathDisplay');
+          if (display.value) {
+            display.value = '📁 ' + display.value + ' (点击授权)';
+            display.style.color = '#ff9800';
+            display.style.cursor = 'pointer';
+            display.title = '点击重新授权访问此文件夹';
           }
         }
-        await updateExportPathDisplay(dirHandle);
       } catch (e) {
         // 句柄无效，清除
         await deleteExportPathHandle();
+        cachedExportPathHandle = null;
+        needsReauth = false;
       }
     }
   } catch (err) {

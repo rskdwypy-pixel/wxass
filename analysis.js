@@ -17,7 +17,10 @@ function formatNumber(num) {
 // 格式化日期
 function formatDate(timestamp) {
   const date = new Date(timestamp * 1000);
-  return `${date.getMonth() + 1}-${date.getDate()}`;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // 计算互动率
@@ -112,11 +115,15 @@ function renderTrendChart(articles) {
     if (art.create_time * 1000 < thirtyDaysAgo) return;
 
     const date = new Date(art.create_time * 1000);
-    const dateKey = `${date.getMonth() + 1}-${date.getDate()}`;
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     if (!dateMap[dateKey]) {
-      dateMap[dateKey] = { reads: 0, timestamp: art.create_time };
+      dateMap[dateKey] = { reads: 0, titles: [], timestamp: art.create_time };
     }
     dateMap[dateKey].reads += art.read_num || 0;
+    // 保存文章标题（最多保存5篇）
+    if (dateMap[dateKey].titles.length < 5) {
+      dateMap[dateKey].titles.push(art.title);
+    }
   });
 
   // 排序日期
@@ -141,7 +148,7 @@ function renderTrendChart(articles) {
   const points = data.map((val, i) => {
     const x = padding.left + (i / (data.length - 1 || 1)) * (width - padding.left - padding.right);
     const y = padding.top + (1 - val / maxReads) * (height - padding.top - padding.bottom);
-    return { x, y, value: val, date: sortedDates[i] };
+    return { x, y, value: val, date: sortedDates[i], titles: dateMap[sortedDates[i]].titles };
   });
 
   // 生成路径
@@ -157,12 +164,13 @@ function renderTrendChart(articles) {
     yLabelsHtml += `<span class="line-y-label" style="top: ${yPos}px;">${formatNumber(val)}</span>`;
   }
 
-  // X轴标签（间隔显示）
+  // X轴标签（间隔显示，格式为MM-DD）
   const xLabelStep = Math.ceil(sortedDates.length / 8);
   let xLabelsHtml = '';
   points.forEach((p, i) => {
     if (i % xLabelStep === 0 || i === points.length - 1) {
-      xLabelsHtml += `<span class="line-x-label" style="left: ${p.x + 30}px;">${p.date}</span>`;
+      const shortDate = p.date.substring(5); // 只显示 MM-DD
+      xLabelsHtml += `<span class="line-x-label" style="left: ${p.x + 30}px;">${shortDate}</span>`;
     }
   });
 
@@ -189,7 +197,7 @@ function renderTrendChart(articles) {
       <!-- 数据点 -->
       ${points.map(p => `
         <circle class="line-point" cx="${p.x}" cy="${p.y}" r="4"
-          data-date="${p.date}" data-value="${formatNumber(p.value)}"/>
+          data-date="${p.date}" data-value="${formatNumber(p.value)}" data-titles='${JSON.stringify(p.titles)}'/>
       `).join('')}
     </svg>
     <div class="line-tooltip" id="lineTooltip"></div>
@@ -201,7 +209,13 @@ function renderTrendChart(articles) {
       const tooltip = container.querySelector('#lineTooltip');
       const date = e.target.dataset.date;
       const value = e.target.dataset.value;
-      tooltip.textContent = `${date}: ${value}`;
+      const titles = JSON.parse(e.target.dataset.titles || '[]');
+      // 显示日期、阅读量和最多2篇文章标题（标题超过30字截断）
+      const titlesText = titles.slice(0, 2).map(t => {
+        const truncated = t.length > 30 ? t.substring(0, 30) + '...' : t;
+        return `• ${truncated}`;
+      }).join('<br/>');
+      tooltip.innerHTML = `<strong>${date}</strong><br/>阅读: ${value}${titlesText ? '<br/>' + titlesText : ''}`;
       tooltip.classList.add('visible');
       const rect = container.getBoundingClientRect();
       tooltip.style.left = (parseFloat(e.target.getAttribute('cx')) + 30) + 'px';
@@ -242,10 +256,20 @@ function renderInteractionChart(stats) {
 // 渲染热门文章列表
 function renderTopArticles(articles) {
   // 过滤有阅读量数据的文章并排序
-  const sortedArticles = articles
+  const articlesWithData = articles
     .filter(art => art.read_num !== undefined && art.read_num > 0)
-    .sort((a, b) => (b.read_num || 0) - (a.read_num || 0))
-    .slice(0, 10);
+    .sort((a, b) => (b.read_num || 0) - (a.read_num || 0));
+
+  // 根据文章总数决定显示数量：少于50篇显示TOP10，否则显示TOP50
+  const totalCount = articlesWithData.length;
+  const topCount = totalCount < 50 ? 10 : 50;
+  const sortedArticles = articlesWithData.slice(0, topCount);
+
+  // 更新标题
+  const titleEl = document.querySelector('.section-title');
+  if (titleEl) {
+    titleEl.textContent = `🔥 热门文章 TOP${topCount}`;
+  }
 
   const tbody = document.getElementById('topArticlesBody');
 

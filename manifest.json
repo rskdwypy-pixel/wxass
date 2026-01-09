@@ -29,5 +29,12 @@
       "run_at": "document_end"
     }
   ],
-  "action": {}
+  "icons": {
+    "16": "logo.png",
+    "48": "logo.png",
+    "128": "logo.png"
+  },
+  "action": {
+    "default_icon": "logo.png"
+  }
 }

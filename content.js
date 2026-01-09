@@ -39,6 +39,11 @@ function extractAccountName() {
   if (accountNameEl) {
     return accountNameEl.innerText.trim();
   }
+  // 备选方案：尝试从 #js_wx_follow_nickname 获取
+  const followNameEl = document.querySelector('#js_wx_follow_nickname');
+  if (followNameEl) {
+    return followNameEl.innerText.trim();
+  }
   return '';
 }
 
@@ -47,6 +52,21 @@ function extractRegion() {
   const regionEl = document.querySelector('#js_ip_wording');
   if (regionEl) {
     return regionEl.innerText.trim();
+  }
+  return '';
+}
+
+// 提取账号头像
+function extractAccountAvatar() {
+  // 从微信文章页面的头像元素获取
+  const avatarEl = document.querySelector('.wx_follow_avatar img');
+  if (avatarEl && avatarEl.src) {
+    return avatarEl.src;
+  }
+  // 备选方案：尝试其他可能的选择器
+  const altAvatarEl = document.querySelector('#js_avatar_container img');
+  if (altAvatarEl && altAvatarEl.src) {
+    return altAvatarEl.src;
   }
   return '';
 }
@@ -63,6 +83,7 @@ function extractArticle() {
     url: window.location.href,
     fakeid: extractFakeid(),
     accountName: extractAccountName(),
+    accountAvatar: extractAccountAvatar(),
     publishTime: extractPublishTime(),
     region: extractRegion(),
     saveTime: Date.now()
